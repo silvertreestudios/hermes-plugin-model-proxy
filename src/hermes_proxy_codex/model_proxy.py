@@ -14,7 +14,7 @@ from aiohttp import web
 from .server import listening
 
 BODY_LIMIT = 1_000_000
-_IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}\Z")
+_IDENTIFIER = re.compile(r"[A-Za-z0-9/][A-Za-z0-9._:/@+-]{0,199}\Z")
 
 
 def identifier(value):

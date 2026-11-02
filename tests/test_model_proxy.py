@@ -146,6 +146,36 @@ class HTTP(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("model", self.fake.calls[0])
         self.assertNotIn("profile", self.fake.calls[0])
 
+    async def test_path_shaped_model_selection_and_attribution(self):
+        path_model = "/app/models/example.gguf"
+        parser = argparse.ArgumentParser()
+        setup_cli(parser)
+        self.assertEqual(parser.parse_args(["--model", path_model]).model, path_model)
+
+        class PathModel(Fake):
+            async def acomplete(self, **kwargs):
+                reply = await super().acomplete(**kwargs)
+                reply.model = path_model
+                return reply
+
+        fake = PathModel()
+        async with listening(model_proxy_app(fake, model=path_model)) as url:
+            for explicit in (False, True):
+                payload: dict[str, object] = {"messages": [{"role": "user", "content": "hello"}]}
+                if explicit:
+                    payload["model"] = path_model
+                async with self.client.post(url + "/v1/chat/completions", json=payload) as response:
+                    self.assertEqual(response.status, 200)
+                    self.assertEqual((await response.json())["model"], path_model)
+                self.assertEqual(fake.calls[-1]["model"], path_model)
+        async with listening(model_proxy_app(fake)) as url:
+            async with self.client.post(url + "/v1/chat/completions", json={
+                "messages": [{"role": "user", "content": "hello"}]
+            }) as response:
+                self.assertEqual(response.status, 200)
+                self.assertEqual((await response.json())["model"], path_model)
+            self.assertNotIn("model", fake.calls[-1])
+
     async def test_browser_and_credentials(self):
         for headers, expected in [({"Origin": "null"}, 403), ({"Sec-Fetch-Site": "none"}, 403),
                                   ({"Host": "localhost"}, 403), ({"Authorization": "secret"}, 400),
