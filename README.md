@@ -88,36 +88,41 @@ access logs. Host audit/log policy remains operator-owned.
 
 ## GitHub release wheels
 
-After this workflow is reviewed and merged into `main`, the owner creates an
-existing reviewed tag such as `v0.1.0` at a commit reachable from `main`. The tag
-must exactly match both `pyproject.toml` and `plugin.yaml`; no version bump is
-needed for the initial 0.1.0 release. Dispatch **Draft wheel release** from
-**main**, with `release_tag=v0.1.0`. Dispatching from another branch does nothing.
-The workflow never creates tags. It tests the tagged source through the full
-Python 3.11–3.13 CI matrix, builds the wheel and source archive, verifies assets,
-and creates a **draft** GitHub Release. Before the final tag recheck, a paginated
-lookup rejects an existing draft or published release for the tag and stops on
-lookup errors. Existing releases are never overwritten.
-The owner reviews the draft and deliberately publishes it as a separate action.
-Failed checks create no draft. Retargeting tags is unsupported; a pre-publication
-recheck catches changes since preflight, but tags must remain immutable throughout
-the run. Ordinary PR CI also uploads the same three-file artifact for inspection
-without creating a release. Whole-run retries replace that run’s artifact;
-failed-job retries reuse a successful upload from the same run and tested commit.
-Artifacts use the run ID and expire in seven days.
+After human review and merge, every push to `main` automatically runs the full
+Python 3.11–3.13 CI matrix and publishes its exact tested artifacts as a public
+GitHub Release. A direct push to `main` also qualifies. PR and feature CI exercise
+the same stamp, build, metadata, checksum and upload path without publishing.
+No dispatch or pre-existing version tag is required.
 
-Published assets are `hermes_model_proxy-0.1.0-py3-none-any.whl`,
-`hermes_model_proxy-0.1.0.tar.gz`, and `SHA256SUMS`. Download from the explicit
-version URL, never a floating `latest` link:
+The tracked base version remains `0.1.0`. Each ephemeral build checkout stamps
+project and plugin versions as `0.1.0+g<12hexSHA>`; the release and tag are
+`0.1.0-<12hexSHA>`, derived from the full event commit. The conventional `g`
+prefix makes the PEP 440 local identifier alphanumeric, preserving leading zeros
+even for numeric-only SHAs. There are no committed version bumps or backwrites.
+The current package has no embedded `[tool.hermes]` manifest; its wheel plugin
+entry point uses distribution metadata, and the sdist includes `plugin.yaml`.
 
-```sh
-RELEASE=https://github.com/silvertreestudios/hermes-plugin-model-proxy/releases/download/v0.1.0
-curl --fail --location --remote-name "$RELEASE/hermes_model_proxy-0.1.0-py3-none-any.whl" &&
-curl --fail --location --remote-name "$RELEASE/hermes_model_proxy-0.1.0.tar.gz" &&
-curl --fail --location --remote-name "$RELEASE/SHA256SUMS" &&
-sha256sum --check SHA256SUMS &&
-python -m pip install ./hermes_model_proxy-0.1.0-py3-none-any.whl
-```
+Publication downloads the current run's Python 3.11 artifacts only after every
+matrix job succeeds. It never rebuilds. A paginated lookup rejects any existing
+release (including drafts); lookup errors, malformed responses, checksum failures,
+or an existing tag pointing to a different full commit stop publication. A missing
+tag is created with explicit `--target FULLSHA`. Tags must remain immutable during
+publication. Releases are never overwritten; failed or ambiguous retries require
+inspection, including any temporary draft left by the standard `gh release create`
+upload-then-publish flow. There is no manual draft publication gate.
+
+Concurrency is per full commit, so successive main pushes each retain their own
+release run, and publication is not cancelled midway. Whole-run retries replace
+that run's CI artifact; failed-job retries reuse the successful upload from that
+same run. Artifacts expire in seven days. Releases explicitly use `--latest=false`.
+
+`SHA256SUMS` also records the full tested commit, release and package versions;
+publication checks these against the event commit.
+
+Assets are `hermes_model_proxy-0.1.0+g<12hexSHA>-py3-none-any.whl`,
+`hermes_model_proxy-0.1.0+g<12hexSHA>.tar.gz`, and `SHA256SUMS`. Download using
+the explicit `releases/download/0.1.0-<12hexSHA>/` URL, verify SHA256SUMS, then
+install the wheel with pip. Never use a floating `latest` URL.
 
 For reproducible Docker or ops installation, record the reviewed wheel URL **and
 its exact SHA256** in the consuming build configuration and verify that pinned
