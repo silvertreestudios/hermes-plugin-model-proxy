@@ -56,7 +56,7 @@ jobs:
           python-version: '3.11'
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: release-dist-${{ github.run_id }}-${{ github.run_attempt }}
+          name: release-dist-${{ github.run_id }}
           path: release-dist
       - name: Validate assets, recheck tag and create draft
         env:

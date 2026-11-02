@@ -69,13 +69,28 @@ def remote_commit(repo, tag):
     raise ValueError('Tag does not resolve to a commit')
 
 
+def ensure_no_release(repo, tag):
+    pages = json.loads(run('gh', 'api', f'repos/{repo}/releases', '--paginate', '--slurp'))
+    if not isinstance(pages, list) or not pages:
+        raise ValueError('Expected paginated release lists')
+    for page in pages:
+        if not isinstance(page, list):
+            raise ValueError('Expected a release list on every page')
+        for item in page:
+            if not isinstance(item, dict) or not isinstance(item.get('tag_name'), str):
+                raise ValueError('Expected a release tag name')
+            if item['tag_name'] == tag:
+                raise ValueError('A release already exists for this tag')
+
+
 def publish(repo, tag, commit, directory):
     checksums(directory, tag)
     if not re.fullmatch(r'[0-9a-f]{40}', commit):
         raise ValueError('Expected full commit SHA')
+    ensure_no_release(repo, tag)
     if remote_commit(repo, tag) != commit:
         raise ValueError('Tag changed since preflight')
-    # gh refuses an existing release; no upload/clobber or tag creation path.
+    # Explicit lookup includes drafts; gh create --draft does not guard duplicates.
     subprocess.run(['gh', 'release', 'create', tag, '--repo', repo,
                     '--verify-tag', '--target', commit, '--draft', '--latest=false',
                     '--title', tag, '--notes',

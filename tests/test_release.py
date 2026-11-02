@@ -1,6 +1,7 @@
 """Offline release validation and trusted workflow contract."""
 import hashlib
 import importlib.util
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -17,6 +18,18 @@ spec.loader.exec_module(release)
 
 
 class ReleaseTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        (ROOT / '.agent-temp').mkdir(exist_ok=True)
+
+    def test_clean_temp_root(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / '.agent-temp') as tmp:
+            root = Path(tmp)
+            with patch.dict(globals(), ROOT=root):
+                ReleaseTests.setUpClass()
+                with tempfile.TemporaryDirectory(dir=root / '.agent-temp') as fixture:
+                    self.assertTrue(Path(fixture).is_dir())
+
     def test_strict_tags(self):
         for tag in ['v0.1.0', 'v12.30.4']:
             self.assertEqual(release.version(tag), tag[1:])
@@ -87,7 +100,8 @@ class ReleaseTests(unittest.TestCase):
                 os.chdir(previous)
 
     def test_publish_payload_and_race(self):
-        with patch.object(release, 'checksums'), patch.object(release, 'remote_commit',
+        with patch.object(release, 'ensure_no_release'), \
+                patch.object(release, 'checksums'), patch.object(release, 'remote_commit',
                 return_value='a' * 40), patch.object(release.subprocess, 'run') as run:
             release.publish('owner/repo', 'v0.1.0', 'a' * 40, 'assets')
             args = run.call_args.args[0]
@@ -115,13 +129,52 @@ class ReleaseTests(unittest.TestCase):
             self.assertEqual(run.call_args.args,
                              ('gh', 'api', 'repos/owner/repo/git/tags/abc'))
 
-    def test_existing_release_failure_propagates(self):
-        with patch.object(release, 'checksums'), patch.object(release, 'remote_commit',
-                return_value='a' * 40), patch.object(release.subprocess, 'run',
-                side_effect=subprocess.CalledProcessError(1, ['gh'])) as run:
+    def test_release_lookup_pages_and_failures(self):
+        for draft in [True, False]:
+            for page in [0, 1]:
+                pages = [[], []]
+                pages[page] = [{'tag_name': 'v0.1.0', 'draft': draft}]
+                with self.subTest(draft=draft, page=page), \
+                        patch.object(release, 'run', return_value=json.dumps(pages)), \
+                        patch.object(release, 'checksums'), \
+                        patch.object(release, 'remote_commit') as remote, \
+                        patch.object(release.subprocess, 'run') as create:
+                    with self.assertRaises(ValueError):
+                        release.publish('owner/repo', 'v0.1.0', 'a' * 40, 'assets')
+                    remote.assert_not_called()
+                    create.assert_not_called()
+        for response in ['invalid', '{}', '[]', '[{}]', '[[{}]]', '[[null]]',
+                         '[[{"tag_name": null}]]']:
+            with self.subTest(response=response), \
+                    patch.object(release, 'run', return_value=response), \
+                    patch.object(release, 'checksums'), \
+                    patch.object(release, 'remote_commit') as remote, \
+                    patch.object(release.subprocess, 'run') as create:
+                with self.assertRaises(ValueError):
+                    release.publish('owner/repo', 'v0.1.0', 'a' * 40, 'assets')
+                remote.assert_not_called()
+                create.assert_not_called()
+        with patch.object(release, 'run', side_effect=subprocess.CalledProcessError(1, ['gh'])), \
+                patch.object(release, 'checksums'), \
+                patch.object(release, 'remote_commit') as remote, \
+                patch.object(release.subprocess, 'run') as create:
             with self.assertRaises(subprocess.CalledProcessError):
                 release.publish('owner/repo', 'v0.1.0', 'a' * 40, 'assets')
-            self.assertEqual(run.call_count, 1)
+            remote.assert_not_called()
+            create.assert_not_called()
+
+    def test_absent_release_checked_before_tag_and_create(self):
+        events = []
+        with patch.object(release, 'checksums'), \
+                patch.object(release, 'run', side_effect=lambda *args:
+                             events.append(args) or '[[{"tag_name":"v0.0.9"}],[]]'), \
+                patch.object(release, 'remote_commit', side_effect=lambda *args:
+                             events.append('tag') or 'a' * 40), \
+                patch.object(release.subprocess, 'run', side_effect=lambda *args, **kwargs:
+                             events.append('create')):
+            release.publish('owner/repo', 'v0.1.0', 'a' * 40, 'assets')
+        self.assertEqual(events, [('gh', 'api', 'repos/owner/repo/releases',
+                                   '--paginate', '--slurp'), 'tag', 'create'])
 
     def test_workflow_contract(self):
         # BaseLoader preserves YAML's `on` key (rather than YAML 1.1 boolean coercion).
@@ -151,6 +204,9 @@ class ReleaseTests(unittest.TestCase):
         download = next(s for s in jobs['publish']['steps']
                         if s.get('uses', '').startswith('actions/download-artifact@'))
         self.assertEqual(upload['with']['name'], download['with']['name'])
+        self.assertEqual(upload['with']['name'], 'release-dist-${{ github.run_id }}')
+        self.assertEqual(upload['with']['overwrite'], 'true')
+        self.assertNotIn('run-id', download['with'])  # Download defaults to this run.
         self.assertEqual(upload['if'], "matrix.python == '3.11'")
         self.assertNotIn('if', jobs['publish'])
         checkout = jobs['publish']['steps'][0]

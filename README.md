@@ -95,13 +95,16 @@ needed for the initial 0.1.0 release. Dispatch **Draft wheel release** from
 **main**, with `release_tag=v0.1.0`. Dispatching from another branch does nothing.
 The workflow never creates tags. It tests the tagged source through the full
 Python 3.11–3.13 CI matrix, builds the wheel and source archive, verifies assets,
-and creates a **draft** GitHub Release. Existing releases are never overwritten.
+and creates a **draft** GitHub Release. Before the final tag recheck, a paginated
+lookup rejects an existing draft or published release for the tag and stops on
+lookup errors. Existing releases are never overwritten.
 The owner reviews the draft and deliberately publishes it as a separate action.
 Failed checks create no draft. Retargeting tags is unsupported; a pre-publication
 recheck catches changes since preflight, but tags must remain immutable throughout
 the run. Ordinary PR CI also uploads the same three-file artifact for inspection
-without creating a release. Artifacts use the run ID and attempt and expire in
-seven days.
+without creating a release. Whole-run retries replace that run’s artifact;
+failed-job retries reuse a successful upload from the same run and tested commit.
+Artifacts use the run ID and expire in seven days.
 
 Published assets are `hermes_model_proxy-0.1.0-py3-none-any.whl`,
 `hermes_model_proxy-0.1.0.tar.gz`, and `SHA256SUMS`. Download from the explicit
