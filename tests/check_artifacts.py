@@ -22,7 +22,7 @@ def check():
     with tarfile.open(source) as archive:
         files = {m.name.split('/', 1)[1] for m in archive.getmembers() if m.isfile()}
         expected = {'src/hermes_proxy_codex/'+name for name in modules}
-        expected |= {'README.md', 'SECURITY.md', 'LICENSE', 'pyproject.toml', 'PKG-INFO', '.gitignore'}
+        expected |= {'README.md', 'SECURITY.md', 'LICENSE', 'pyproject.toml', 'PKG-INFO', '.gitignore', 'plugin.yaml', '__init__.py'}
         assert files == expected, (files - expected, expected - files)
     print('Wheel and source distribution contain only allowed project files')
 
