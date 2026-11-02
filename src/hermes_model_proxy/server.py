@@ -13,9 +13,13 @@ async def local_process_only(request, handler):
     """
     socket = request.transport.get_extra_info("sockname") if request.transport else None
     hosts = request.headers.getall("Host", [])
+    authorities = {f"127.0.0.1:{socket[1]}"} if socket else set()
+    if socket and socket[1] == 80:
+        authorities.add("127.0.0.1")  # HTTP clients may omit the default port.
     if (
         not socket
-        or hosts != [f"127.0.0.1:{socket[1]}"]
+        or len(hosts) != 1
+        or hosts[0] not in authorities
         or "Origin" in request.headers
         or any(name.lower().startswith("sec-fetch-") for name in request.headers)
     ):

@@ -36,6 +36,34 @@ class Listener(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({a.dest for a in parser._actions},
                          {'help', 'port', 'timeout', 'model', 'provider'})
 
+    async def test_default_http_port_authority(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from multidict import CIMultiDict
+        from hermes_model_proxy.server import local_process_only
+
+        async def handler(request):
+            return web.Response(status=200)
+
+        cases = [
+            (80, [("Host", "127.0.0.1")], 200),
+            (80, [("Host", "127.0.0.1:80")], 200),
+            (8647, [("Host", "127.0.0.1")], 403),
+            (80, [("Host", "127.0.0.1:8647")], 403),
+            (80, [("Host", "localhost")], 403),
+            (80, [], 403),
+            (80, [("Host", "127.0.0.1"), ("Host", "127.0.0.1")], 403),
+            (80, [("Host", "127.0.0.1"), ("Origin", "null")], 403),
+            (80, [("Host", "127.0.0.1"), ("Sec-Fetch-Site", "none")], 403),
+        ]
+        for port, headers, status in cases:
+            with self.subTest(port=port, headers=headers):
+                request = SimpleNamespace(
+                    transport=Mock(get_extra_info=Mock(return_value=("127.0.0.1", port))),
+                    headers=CIMultiDict(headers),
+                )
+                self.assertEqual((await local_process_only(request, handler)).status, status)
+
     async def test_socket_authority_guard_before_handler(self):
         calls = []
 
