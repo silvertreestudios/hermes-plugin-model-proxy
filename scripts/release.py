@@ -155,7 +155,7 @@ def remote_commit(repo, tag):
 
 
 def validate_object(obj):
-    if (not isinstance(obj, dict) or obj.get('type') not in {'tag', 'commit'}
+    if (not isinstance(obj, dict) or obj.get('type') not in {'tag', 'commit', 'tree', 'blob'}
             or not isinstance(obj.get('sha'), str)
             or not re.fullmatch(r'[0-9a-f]{40}', obj['sha'])):
         raise ValueError('Malformed tag object')

@@ -178,6 +178,16 @@ class ReleaseTests(unittest.TestCase):
             self.assertEqual(release.remote_commit('owner/repo', TAG), SHA)
         with patch.object(release, 'run', return_value='[[]]'):
             self.assertIsNone(release.remote_commit('owner/repo', TAG))
+        for kind in ['tree', 'blob']:
+            unrelated = {'ref': 'refs/tags/unrelated', 'object': {'type': kind, 'sha': 'b' * 40}}
+            selected = {'ref': f'refs/tags/{TAG}', 'object': {'type': 'commit', 'sha': SHA}}
+            with self.subTest(kind=kind), patch.object(
+                    release, 'run', return_value=json.dumps([[unrelated, selected]])):
+                self.assertEqual(release.remote_commit('owner/repo', TAG), SHA)
+            unrelated['ref'] = f'refs/tags/{TAG}'
+            with self.subTest(selected_kind=kind), patch.object(
+                    release, 'run', return_value=json.dumps([[unrelated]])), self.assertRaises(ValueError):
+                release.remote_commit('owner/repo', TAG)
         for value in ['invalid', '[]', '[{}]', '[[{}]]', '[[{"ref":"x","object":{}}]]']:
             with patch.object(release, 'run', return_value=value), self.assertRaises(ValueError):
                 release.remote_commit('owner/repo', TAG)
