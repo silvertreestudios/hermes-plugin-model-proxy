@@ -1,0 +1,11 @@
+manifest_version: 2
+name: model-proxy
+version: 0.1.0
+description: Local text inference through the host-owned Hermes LLM facade
+kind: standalone
+license: MIT
+python_dependencies:
+  - aiohttp==3.14.3
+capabilities:
+  - llm.model_override
+  - llm.provider_override

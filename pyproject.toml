@@ -1,0 +1,32 @@
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hermes-model-proxy"
+version = "0.1.0"
+description = "Local text inference through the public Hermes LLM facade"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+dependencies = ["aiohttp==3.14.3"]
+
+[project.entry-points."hermes_agent.plugins"]
+model-proxy = "hermes_model_proxy.model_proxy:register"
+
+[project.entry-points."hermes_agent.plugin_capabilities"]
+"model-proxy.llm.model_override" = "hermes_model_proxy.model_proxy:register"
+"model-proxy.llm.provider_override" = "hermes_model_proxy.model_proxy:register"
+
+[tool.hatch.build]
+exclude = ["**/__pycache__", "**/*.pyc", "**/.env*", "**/auth.json", "**/credentials*", "**/.agent-temp"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hermes_model_proxy"]
+
+[tool.hatch.build.targets.sdist]
+include = ["/src/hermes_model_proxy", "/README.md", "/SECURITY.md", "/LICENSE", "/pyproject.toml", "/plugin.yaml", "/__init__.py"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]

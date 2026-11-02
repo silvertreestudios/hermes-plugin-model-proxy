@@ -1,0 +1,6 @@
+hatchling==1.27.0
+packaging==26.2
+pluggy==1.6.0
+pathspec==1.1.1
+trove-classifiers==2026.9.21.13
+ruff==0.16.0
