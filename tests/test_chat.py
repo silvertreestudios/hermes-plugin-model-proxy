@@ -120,6 +120,28 @@ class Chat(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(adapter.calls, 0)
             helper.assert_not_called()
 
+    async def test_large_single_line_terminal_below_response_limit(self):
+        text = 'x' * 140_000
+        raw = fixture(text)
+        self.assertLess(len(raw.encode()), 1_000_000)
+
+        async def reply(request):
+            return web.Response(text=raw, content_type='text/event-stream')
+
+        async with self.running(reply) as (url, client, adapter, helper):
+            for stream in (False, True):
+                async with client.post(url+'/v1/chat/completions', json=body(stream)) as response:
+                    self.assertEqual(response.status, 200)
+                    output = await response.text()
+                    self.assertNotIn('"error"', output)
+                    if stream:
+                        chunks = [json.loads(frame[6:]) for frame in output.split('\n\n')
+                                  if frame.startswith('data: ') and frame != 'data: [DONE]']
+                        self.assertEqual(''.join(chunk['choices'][0]['delta'].get('content', '') for chunk in chunks), text)
+                        self.assertTrue(output.endswith('data: [DONE]\n\n'))
+                    else:
+                        self.assertEqual(json.loads(output)['choices'][0]['message']['content'], text)
+
     async def test_validation_before_auth(self):
         async def never(request):
             self.fail('Validation reached upstream')

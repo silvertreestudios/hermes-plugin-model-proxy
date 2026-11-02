@@ -122,7 +122,9 @@ async def chat_app(adapter):
     # Fixed listener URL from setup, never from Host or any client header.
     async with listening(create_app(adapter)) as native_url, ClientSession(
             timeout=ClientTimeout(total=90, sock_connect=5, sock_read=30),
-            read_bufsize=65536) as client:
+            # SSE iteration reads whole lines; allow any line within our total
+            # response budget instead of aiohttp's smaller default line limit.
+            read_bufsize=MAX_BYTES) as client:
         async def handle(request):
             try:
                 if request.query_string:
