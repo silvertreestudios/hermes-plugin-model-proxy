@@ -4,6 +4,7 @@ from pathlib import Path
 
 from hermes_constants import get_hermes_home
 from hermes_cli.auth import resolve_codex_runtime_credentials
+from hermes_cli.auth_codex import _codex_access_token_is_expiring
 from hermes_cli.proxy.adapters.base import UpstreamAdapter, UpstreamCredential
 
 BASE = "https://chatgpt.com/backend-api/codex"
@@ -46,6 +47,10 @@ class CodexAdapter(UpstreamAdapter):
             if (result.get("base_url", "").rstrip("/") != BASE
                     or not isinstance(token, str) or not token
                     or any(not 33 <= ord(c) <= 126 for c in token)):
+                raise ValueError()
+            # The pinned resolver's read-only path skips expiry checks. Reuse
+            # Hermes' token helper without invoking refresh or parsing the store.
+            if _codex_access_token_is_expiring(token, skew_seconds=30):
                 raise ValueError()
             return UpstreamCredential(bearer=token, base_url=BASE)
         except Exception:

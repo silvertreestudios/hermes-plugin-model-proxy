@@ -51,10 +51,12 @@ Streaming usage chunks are not supported.
 
 Authentication delegates to Hermes' existing credential resolver with
 `read_only=True`. An absolute `HERMES_HOME` must be explicitly selected and must
-match Hermes' `get_hermes_home()` helper. Hermes owns store formats, expiry checks
-and its configured shared-root authentication inheritance; the bridge does not
-search other named profiles or parse auth stores itself. Missing or expired
-credentials fail closed. Renew authentication separately through Hermes.
+match Hermes' `get_hermes_home()` helper. Hermes owns store formats and its configured
+shared-root authentication inheritance. Because its read-only resolver skips expiry
+checks, the bridge also uses Hermes' non-mutating token helper to reject expired
+or expiring-within-30-seconds JWTs. It does not search other named profiles or parse
+auth stores itself. Missing or expired credentials fail closed. Renew authentication
+separately through Hermes.
 There is no login, token refresh, Codex CLI adoption or mutating-resolver fallback.
 Upstream read-only resolution is not a blanket filesystem-write guarantee:
 Hermes' corrupt-store recovery can preserve a backup. Keep auth stores valid

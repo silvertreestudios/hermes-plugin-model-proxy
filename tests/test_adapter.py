@@ -58,6 +58,15 @@ class Auth(unittest.TestCase):
                         CodexAdapter()
                 resolve.assert_not_called()
 
+    def test_expired_jwt_fails_authentication_without_refresh(self):
+        with tempfile.TemporaryDirectory() as root, patch.dict(os.environ, {'HERMES_HOME': root}, clear=True):
+            for expiry, expected in ((1, False), (4_000_000_000, True)):
+                payload = base64.urlsafe_b64encode(json.dumps({'exp': expiry}).encode()).decode().rstrip('=')
+                with patch('hermes_proxy_codex.adapter.resolve_codex_runtime_credentials', return_value={
+                        'api_key': 'synthetic.' + payload + '.signature', 'base_url': BASE}) as resolve:
+                    self.assertEqual(CodexAdapter().is_authenticated(), expected)
+                    resolve.assert_called_once_with(read_only=True)
+
     def test_actual_upstream_header_helper(self):
         from agent.codex_headers import codex_cloudflare_headers
         payload = {'https://api.openai.com/auth': {
