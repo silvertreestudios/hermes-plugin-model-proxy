@@ -25,7 +25,7 @@ def preflight(tag):
     expected = version(tag)
     ref = f'refs/tags/{tag}'
     commit = run('git', 'rev-parse', '--verify', f'{ref}^{{commit}}')
-    subprocess.run(['git', 'merge-base', '--is-ancestor', commit, 'origin/main'], check=True)
+    subprocess.run(['git', 'merge-base', '--is-ancestor', commit, 'refs/remotes/origin/main'], check=True)
     project = tomllib.loads(run('git', 'show', f'{commit}:pyproject.toml'))
     manifest = run('git', 'show', f'{commit}:plugin.yaml')
     versions = re.findall(r'^version: ([^\n]+)$', manifest, re.MULTILINE)

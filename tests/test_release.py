@@ -86,13 +86,19 @@ class ReleaseTests(unittest.TestCase):
                     release.preflight('v0.2.0')
                 with self.assertRaises(subprocess.CalledProcessError):
                     release.preflight('v9.0.0')
-                (path / 'plugin.yaml').write_text('version: 0.2.0\n')
+                (path / 'pyproject.toml').write_text('[project]\nversion="0.3.0"\n')
+                (path / 'plugin.yaml').write_text('version: 0.3.0\n')
                 git('add', '.')
                 git('commit', '-m', 'unmerged')
                 git('tag', 'v0.3.0')
                 with self.assertRaises(subprocess.CalledProcessError):
                     release.preflight('v0.3.0')
+                # An ambiguous shorthand must not let a tag impersonate the reviewed branch.
+                git('tag', 'origin/main')
+                with self.assertRaises(subprocess.CalledProcessError):
+                    release.preflight('v0.3.0')
                 git('update-ref', 'refs/remotes/origin/main', git('rev-parse', 'HEAD'))
+                self.assertEqual(release.preflight('v0.3.0'), git('rev-parse', 'HEAD'))
                 git('tag', '-f', 'v0.1.0')
                 with self.assertRaises(ValueError):
                     release.preflight('v0.1.0')
