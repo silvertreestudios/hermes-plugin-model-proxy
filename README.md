@@ -86,6 +86,52 @@ and remote work completion are outside this plugin's control. Embedded callers
 must configure dependency log redaction; the CLI suppresses aiohttp exception and
 access logs. Host audit/log policy remains operator-owned.
 
+## GitHub release wheels
+
+After human review and merge, every push to `main` automatically runs the full
+Python 3.11–3.13 CI matrix and publishes its exact tested artifacts as a public
+GitHub Release. A direct push to `main` also qualifies. PR and feature CI exercise
+the same stamp, build, metadata, checksum and upload path without publishing.
+No dispatch or pre-existing version tag is required.
+
+The tracked base version remains `0.1.0`. Each ephemeral build checkout stamps
+project and plugin versions as `0.1.0+g<12hexSHA>`; the release and tag are
+`0.1.0-<12hexSHA>`, derived from the full event commit. The conventional `g`
+prefix makes the PEP 440 local identifier alphanumeric, preserving leading zeros
+even for numeric-only SHAs. There are no committed version bumps or backwrites.
+The current package has no embedded `[tool.hermes]` manifest; its wheel plugin
+entry point uses distribution metadata, and the sdist includes `plugin.yaml`.
+
+Publication downloads the current run's Python 3.11 artifacts only after every
+matrix job succeeds. It never rebuilds. A paginated lookup rejects any existing
+release (including drafts); lookup errors, malformed responses, checksum failures,
+or an existing tag pointing to a different full commit stop publication. A missing
+tag is created with explicit `--target FULLSHA`. Tags must remain immutable during
+publication. Releases are never overwritten; failed or ambiguous retries require
+inspection, including any temporary draft left by the standard `gh release create`
+upload-then-publish flow. There is no manual draft publication gate.
+
+Concurrency is per full commit, so successive main pushes each retain their own
+release run, and publication is not cancelled midway. Whole-run retries replace
+that run's CI artifact; failed-job retries reuse the successful upload from that
+same run. Artifacts expire in seven days. Releases explicitly use `--latest=false`.
+
+`SHA256SUMS` also records the full tested commit, release and package versions;
+publication checks these against the event commit.
+
+Assets are `hermes_model_proxy-0.1.0+g<12hexSHA>-py3-none-any.whl`,
+`hermes_model_proxy-0.1.0+g<12hexSHA>.tar.gz`, and `SHA256SUMS`. Download using
+the explicit `releases/download/0.1.0-<12hexSHA>/` URL, verify SHA256SUMS, then
+install the wheel with pip. Never use a floating `latest` URL.
+
+For reproducible Docker or ops installation, record the reviewed wheel URL **and
+its exact SHA256** in the consuming build configuration and verify that pinned
+hash before installation. `SHA256SUMS` checks transfer integrity; downloading it
+alongside the wheel alone is not an independent trust anchor. Dependencies still
+need their own pins in that environment. Install in Hermes' environment and
+enable the plugin explicitly as described above. No package index publication or
+ops configuration change is part of this workflow.
+
 ## Development
 
 CI uses pinned public Hermes source and synthetic fixtures, with no credentials or
@@ -106,8 +152,8 @@ python -m pip install --no-deps --no-build-isolation dist/*.tar.gz
 PYTHONPATH="$HERMES_SOURCE:tests" python -W error -m unittest discover -s tests -v
 python -m pip install --force-reinstall --no-deps dist/*.whl
 PYTHONPATH="$HERMES_SOURCE:tests" python -W error -m unittest discover -s tests -v
-ruff check src tests __init__.py
-python -W error -m compileall -q src tests __init__.py
+ruff check src tests scripts __init__.py
+python -W error -m compileall -q src tests scripts __init__.py
 ```
 
 Tests cover the public host facade, default selection and trust gates, directory
@@ -115,4 +161,4 @@ registration/Plugin Doctor, wheel discovery, request validation, listener securi
 cancellation and foreground lifecycle. CI runs Linux Python 3.11–3.13. This contract
 is limited to the public host facade; offline checks do not establish live provider
 or credential behavior. The repository remains
-`silvertreestudios/hermes-proxy-codex`.
+`silvertreestudios/hermes-plugin-model-proxy`.
