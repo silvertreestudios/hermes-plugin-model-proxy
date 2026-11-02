@@ -24,10 +24,11 @@ For a directory installation, copy `plugin.yaml`, `__init__.py`, and the `src/`
 tree into `<selected-Hermes-home>/plugins/model-proxy/`, install
 `aiohttp==3.14.3` in Hermes' Python environment, then explicitly run
 `hermes plugins enable model-proxy` for that profile. Copy only those project
-files, never a development environment or auth/config files. Hermes loads the
-root `__init__.py`; it exposes the same `register` as the wheel. When both are
-present, Hermes' directory discovery takes precedence. Installation and enablement
-are operator actions: this plugin never enables itself or grants permissions.
+files, never a development environment or auth/config files. The root `__init__.py`
+loads its own source tree within Hermes's isolated plugin
+namespace, so an installed wheel or earlier directory load cannot shadow it.
+When both are present, Hermes' directory discovery takes precedence. Installation
+and enablement are operator actions: this plugin never enables itself or grants permissions.
 
 The foreground command prints `http://127.0.0.1:8647/v1`. Only the literal IPv4
 loopback listener is supported; port 0 selects an available port. SIGINT/SIGTERM

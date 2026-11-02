@@ -87,9 +87,45 @@ class Validation(unittest.TestCase):
         self.assertEqual(parser.parse_args([]).port, 8647)
         self.assertIsNotNone(entry["handler_fn"])
         directory = manager._load_directory_module(manifest)
-        self.assertIs(directory.register, register)
+        import inspect
+        self.assertEqual(Path(inspect.getfile(directory.register)).resolve(),
+                         root / "src/hermes_model_proxy/model_proxy.py")
+        self.assertIsNot(directory.register, register)
         manager.unload()
         self.assertNotIn("model-proxy", manager._cli_commands)
+
+    def test_directory_selection_and_reload_ignore_installed_cache(self):
+        import shutil
+        import tempfile
+        from hermes_cli.plugins import PluginContext, PluginManager
+        from hermes_cli.plugins_manifest import parse_manifest_file
+        root = Path(__file__).resolve().parents[1]
+        # The installed wheel's register is already imported at module scope.
+        with tempfile.TemporaryDirectory() as temporary:
+            stage = Path(temporary) / "model-proxy"
+            stage.mkdir()
+            for name in ("plugin.yaml", "__init__.py"):
+                shutil.copy2(root / name, stage / name)
+            shutil.copytree(root / "src", stage / "src",
+                            ignore=shutil.ignore_patterns("__pycache__"))
+            source = stage / "src/hermes_model_proxy/model_proxy.py"
+            original = source.read_text()
+            manifest = parse_manifest_file(stage / "plugin.yaml", stage, "user", "")
+            manager = PluginManager()
+            try:
+                for port in (18647, 28647):
+                    # Vary source length to avoid a same-second bytecode cache hit.
+                    source.write_text(original.replace("default=8647", f"default={port}" + " " * (port // 10000)))
+                    module = manager._load_directory_module(manifest)
+                    module.register(PluginContext(manifest, manager))
+                    parser = argparse.ArgumentParser()
+                    manager._cli_commands["model-proxy"]["setup_fn"](parser)
+                    self.assertEqual(parser.parse_args([]).port, port)
+                parser = argparse.ArgumentParser()
+                setup_cli(parser)
+                self.assertEqual(parser.parse_args([]).port, 8647)
+            finally:
+                manager.unload()
 
     def test_directory_doctor(self):
         import shutil
