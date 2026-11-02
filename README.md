@@ -112,10 +112,10 @@ version URL, never a floating `latest` link:
 
 ```sh
 RELEASE=https://github.com/silvertreestudios/hermes-plugin-model-proxy/releases/download/v0.1.0
-curl --fail --location --remote-name "$RELEASE/hermes_model_proxy-0.1.0-py3-none-any.whl"
-curl --fail --location --remote-name "$RELEASE/hermes_model_proxy-0.1.0.tar.gz"
-curl --fail --location --remote-name "$RELEASE/SHA256SUMS"
-sha256sum --check SHA256SUMS
+curl --fail --location --remote-name "$RELEASE/hermes_model_proxy-0.1.0-py3-none-any.whl" &&
+curl --fail --location --remote-name "$RELEASE/hermes_model_proxy-0.1.0.tar.gz" &&
+curl --fail --location --remote-name "$RELEASE/SHA256SUMS" &&
+sha256sum --check SHA256SUMS &&
 python -m pip install ./hermes_model_proxy-0.1.0-py3-none-any.whl
 ```
 
