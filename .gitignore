@@ -1,0 +1,12 @@
+.agent-temp/
+.env
+.env.*
+auth.json
+credentials*
+.venv/
+__pycache__/
+*.py[cod]
+dist/
+build/
+*.egg-info/
+.ruff_cache/
