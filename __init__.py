@@ -6,4 +6,4 @@ import sys
 _source = str(Path(__file__).resolve().parent / "src")
 if _source not in sys.path:
     sys.path.insert(0, _source)
-from hermes_proxy_codex.model_proxy import register  # noqa: E402, F401
+from hermes_model_proxy.model_proxy import register  # noqa: E402, F401

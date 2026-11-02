@@ -2,7 +2,7 @@
 
 This bridge is for trusted local processes. Loopback binding is not client
 authentication. Browser-origin/Fetch Metadata requests and non-matching Host
-headers are rejected before route processing, including on the private listener;
+headers are rejected before route processing;
 this does not restrict other local processes. Do not expose it through port
 forwarding or a public reverse proxy.
 Keep the selected Hermes home operator-controlled, including any symlink targets.
@@ -24,7 +24,5 @@ validated. Disconnect/timeout cancellation releases plugin-owned request/listene
 resources; it does not guarantee host transport cleanup or remote cancellation.
 Host logs, routing/fallback and provider behavior remain operator responsibilities.
 
-The standalone Codex Chat route sanitizes failures and isolates provider headers. Native Responses
-is raw upstream passthrough, including errors and headers; see README limitations.
 Dependency updates and publication require owner review. Offline tests do not
 establish live model or credential behavior.

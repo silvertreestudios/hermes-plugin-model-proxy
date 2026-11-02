@@ -43,19 +43,16 @@ jobs:
           PYTHONPATH: .agent-temp/hermes:tests
           HERMES_HOME: ${{ runner.temp }}/synthetic-hermes-home
         run: |
-          hermes-proxy-codex --help
-          python -W error -m unittest test_model_proxy.Validation -v
+          python -W error -m unittest discover -s tests -v
       - name: Install wheel
         run: python -m pip install --force-reinstall --no-deps dist/*.whl
-      - name: Wheel installation smoke
-        run: hermes-proxy-codex --help
       - name: Plugin facade contract in pinned Hermes
         env:
           PYTHONPATH: .agent-temp/hermes
           HERMES_HOME: ${{ runner.temp }}/synthetic-hermes-home
         run: |
           python -c "from hermes_cli.plugins import PluginContext; from agent.plugin_llm import PluginLlm; assert hasattr(PluginContext, 'llm'); assert callable(PluginLlm.acomplete)"
-      - name: Offline plugin and standalone integration tests
+      - name: Offline installed wheel plugin integration tests
         env:
           PYTHONPATH: .agent-temp/hermes:tests
           HERMES_HOME: ${{ runner.temp }}/synthetic-hermes-home

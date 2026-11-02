@@ -8,10 +8,10 @@ from types import SimpleNamespace
 import unittest
 
 from aiohttp import ClientSession
-from hermes_proxy_codex.model_proxy import (
+from hermes_model_proxy.model_proxy import (
     BODY_LIMIT, model_proxy_app, parse_request, register, serve, setup_cli,
 )
-from hermes_proxy_codex.server import listening
+from hermes_model_proxy.server import listening
 
 
 def result(text="answer"):

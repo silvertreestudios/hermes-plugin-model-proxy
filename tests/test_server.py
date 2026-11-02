@@ -1,7 +1,9 @@
+import asyncio
 import unittest
-from aiohttp import web
-from hermes_proxy_codex.cli import parser
-from hermes_proxy_codex.server import listening
+from aiohttp import ClientSession, web
+import argparse
+from hermes_model_proxy.model_proxy import setup_cli
+from hermes_model_proxy.server import listening
 
 
 class Listener(unittest.IsolatedAsyncioTestCase):
@@ -29,4 +31,45 @@ class Listener(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cleaned, [True])
 
     def test_cli_has_no_host_option(self):
-        self.assertEqual({a.dest for a in parser()._actions}, {'help', 'port'})
+        parser = argparse.ArgumentParser()
+        setup_cli(parser)
+        self.assertEqual({a.dest for a in parser._actions},
+                         {'help', 'port', 'timeout', 'model', 'provider'})
+
+    async def test_socket_authority_guard_before_handler(self):
+        calls = []
+
+        async def handler(request):
+            calls.append(True)
+            return web.Response(text="ok")
+
+        app = web.Application()
+        app.router.add_post("/", handler)
+        async with listening(app) as url, ClientSession() as client:
+            authority = url.removeprefix("http://")
+            cases = [
+                [("Host", "127.0.0.1:1"), ("X-Forwarded-Host", authority)],
+                [("Host", "example.invalid"), ("Forwarded", "host=" + authority)],
+                [("Origin", "")], [("Sec-Fetch-Mode", "")],
+                [("sEc-FeTcH-Custom", "native")],
+            ]
+            for headers in cases:
+                with self.subTest(headers=headers):
+                    async with client.post(url, headers=headers, data=b"invalid") as response:
+                        self.assertEqual(response.status, 403)
+            reader, writer = await asyncio.open_connection("127.0.0.1", int(authority.split(":")[1]))
+            try:
+                writer.write((f"POST / HTTP/1.1\r\nHost: {authority}\r\n"
+                              f"Host: {authority}\r\nContent-Length: 0\r\n"
+                              "Connection: close\r\n\r\n").encode())
+                await writer.drain()
+                # aiohttp may reject duplicate Host headers before middleware.
+                self.assertIn((await reader.readline()).split()[1], (b"400", b"403"))
+                await reader.read()
+            finally:
+                writer.close()
+                await writer.wait_closed()
+            self.assertEqual(calls, [])
+            async with client.post(url) as response:
+                self.assertEqual(response.status, 200)
+            self.assertEqual(calls, [True])

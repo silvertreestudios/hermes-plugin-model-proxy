@@ -1,4 +1,4 @@
-"""Loopback listener shared by the public and private proxy applications."""
+"""Protected loopback listener for the model-proxy plugin."""
 from contextlib import asynccontextmanager
 from aiohttp import web
 
@@ -25,27 +25,11 @@ async def local_process_only(request, handler):
 
 @asynccontextmanager
 async def listening(app, *, host="127.0.0.1", port=0):
-    """Serve a protected loopback application and clean up its listener on exit.
-
-    Known native-transport limitation: the pinned Hermes proxy can skip closing
-    its per-request upstream session when cancellation occurs before response
-    headers or during retry-credential lookup. Response preparation can also fail
-    before entering its streaming cleanup block, skipping session close and
-    response release. This listener's handler cancellation makes the cancellation
-    paths relevant to disconnected or timed-out clients.
-
-    These are cleanup gaps on interrupted/failing requests, not demonstrated
-    corruption of successful responses. Resources are not deterministically
-    released; repeated interruptions could create resource pressure and affect
-    later availability. Accept this trade-off for bounded, trusted local use
-    rather than patching or duplicating Hermes' transport. Reassess before using
-    this bridge as a high-concurrency or long-running shared service.
-    """
+    """Serve a protected loopback application and clean up its listener on exit."""
     if host != "127.0.0.1":
         raise ValueError("Only 127.0.0.1 is supported")
     if type(port) is not int or not 0 <= port <= 65535:
         raise ValueError("Invalid port")
-    # Enforce the same boundary on the public bridge and private native hop.
     app.middlewares.insert(0, local_process_only)
     runner = web.AppRunner(app, access_log=None, handler_cancellation=True)
     await runner.setup()
