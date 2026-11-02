@@ -86,6 +86,44 @@ and remote work completion are outside this plugin's control. Embedded callers
 must configure dependency log redaction; the CLI suppresses aiohttp exception and
 access logs. Host audit/log policy remains operator-owned.
 
+## GitHub release wheels
+
+After this workflow is reviewed and merged into `main`, the owner creates an
+existing reviewed tag such as `v0.1.0` at a commit reachable from `main`. The tag
+must exactly match both `pyproject.toml` and `plugin.yaml`; no version bump is
+needed for the initial 0.1.0 release. Dispatch **Draft wheel release** from
+**main**, with `release_tag=v0.1.0`. Dispatching from another branch does nothing.
+The workflow never creates tags. It tests the tagged source through the full
+Python 3.11–3.13 CI matrix, builds the wheel and source archive, verifies assets,
+and creates a **draft** GitHub Release. Existing releases are never overwritten.
+The owner reviews the draft and deliberately publishes it as a separate action.
+Failed checks create no draft. Retargeting tags is unsupported; a pre-publication
+recheck catches changes since preflight, but tags must remain immutable throughout
+the run. Ordinary PR CI also uploads the same three-file artifact for inspection
+without creating a release. Artifacts use the run ID and attempt and expire in
+seven days.
+
+Published assets are `hermes_model_proxy-0.1.0-py3-none-any.whl`,
+`hermes_model_proxy-0.1.0.tar.gz`, and `SHA256SUMS`. Download from the explicit
+version URL, never a floating `latest` link:
+
+```sh
+RELEASE=https://github.com/silvertreestudios/hermes-plugin-model-proxy/releases/download/v0.1.0
+curl --fail --location --remote-name "$RELEASE/hermes_model_proxy-0.1.0-py3-none-any.whl"
+curl --fail --location --remote-name "$RELEASE/hermes_model_proxy-0.1.0.tar.gz"
+curl --fail --location --remote-name "$RELEASE/SHA256SUMS"
+sha256sum --check SHA256SUMS
+python -m pip install ./hermes_model_proxy-0.1.0-py3-none-any.whl
+```
+
+For reproducible Docker or ops installation, record the reviewed wheel URL **and
+its exact SHA256** in the consuming build configuration and verify that pinned
+hash before installation. `SHA256SUMS` checks transfer integrity; downloading it
+alongside the wheel alone is not an independent trust anchor. Dependencies still
+need their own pins in that environment. Install in Hermes' environment and
+enable the plugin explicitly as described above. No package index publication or
+ops configuration change is part of this workflow.
+
 ## Development
 
 CI uses pinned public Hermes source and synthetic fixtures, with no credentials or
@@ -106,8 +144,8 @@ python -m pip install --no-deps --no-build-isolation dist/*.tar.gz
 PYTHONPATH="$HERMES_SOURCE:tests" python -W error -m unittest discover -s tests -v
 python -m pip install --force-reinstall --no-deps dist/*.whl
 PYTHONPATH="$HERMES_SOURCE:tests" python -W error -m unittest discover -s tests -v
-ruff check src tests __init__.py
-python -W error -m compileall -q src tests __init__.py
+ruff check src tests scripts __init__.py
+python -W error -m compileall -q src tests scripts __init__.py
 ```
 
 Tests cover the public host facade, default selection and trust gates, directory
@@ -115,4 +153,4 @@ registration/Plugin Doctor, wheel discovery, request validation, listener securi
 cancellation and foreground lifecycle. CI runs Linux Python 3.11–3.13. This contract
 is limited to the public host facade; offline checks do not establish live provider
 or credential behavior. The repository remains
-`silvertreestudios/hermes-proxy-codex`.
+`silvertreestudios/hermes-plugin-model-proxy`.
