@@ -32,7 +32,8 @@ def number(value, low, high, *, integer=False):
 
 def parse_request(body, *, model=None, timeout=90):
     if not isinstance(body, dict) or set(body) - {
-        "messages", "model", "stream", "n", "max_tokens", "temperature", "timeout"
+        "messages", "model", "stream", "n", "max_tokens", "max_completion_tokens",
+        "temperature", "timeout", "response_format"
     }:
         raise ValueError("Unsupported request fields")
     messages = body.get("messages")
@@ -53,12 +54,27 @@ def parse_request(body, *, model=None, timeout=90):
     kwargs = {"messages": messages, "timeout": timeout, "max_tokens": 1024}
     if selected is not None:
         kwargs["model"] = selected
-    if "max_tokens" in body:
-        kwargs["max_tokens"] = number(body["max_tokens"], 1, 32768, integer=True)
+    if "max_tokens" in body and "max_completion_tokens" in body:
+        raise ValueError("Token aliases cannot be combined")
+    for token_field in ("max_tokens", "max_completion_tokens"):
+        if token_field in body:
+            kwargs["max_tokens"] = number(body[token_field], 1, 32768, integer=True)
     if "temperature" in body:
         kwargs["temperature"] = number(body["temperature"], 0, 2)
     if "timeout" in body:
         kwargs["timeout"] = number(body["timeout"], 0.1, timeout)
+    if "response_format" in body:
+        if body["response_format"] != {"type": "json_object"}:
+            raise ValueError("Only response_format json_object is supported")
+        if ([m["role"] for m in messages] not in (["user"], ["system", "user"])
+                or not messages[-1]["content"].strip()):
+            raise ValueError("JSON mode requires optional system then one nonempty user message")
+        del kwargs["messages"]
+        kwargs.update(instructions="Respond to the user input with a JSON object.",
+                      input=[{"type": "text", "text": messages[-1]["content"]}],
+                      json_mode=True)
+        if len(messages) == 2:
+            kwargs["system_prompt"] = messages[0]["content"]
     return kwargs
 
 
@@ -66,19 +82,25 @@ def error(status, message, kind):
     return web.json_response({"error": {"message": message, "type": kind, "code": kind}}, status=status)
 
 
-def envelope(result):
+def envelope(result, *, structured=False):
     # Attribution is host supplied, but never echo arbitrary metadata or exceptions.
     model = identifier(result.model)
     provider = identifier(result.provider)
     if not isinstance(result.text, str):
         raise ValueError("Invalid host result")
+    text = result.text
+    if structured:
+        if result.content_type != "json" or not isinstance(result.parsed, dict):
+            raise ValueError("Invalid structured host result")
+        # Use the facade's validated value, including when it removed code fences.
+        text = json.dumps(result.parsed, ensure_ascii=False, allow_nan=False)
     usage = result.usage
     counts = [usage.input_tokens, usage.output_tokens, usage.total_tokens]
     if any(type(n) is not int or n < 0 for n in counts):
         raise ValueError("Invalid host usage")
     return {"id": "chatcmpl-" + uuid.uuid4().hex, "object": "chat.completion",
             "created": int(time.time()), "model": model, "provider": provider,
-            "choices": [{"index": 0, "message": {"role": "assistant", "content": result.text},
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": text},
                          "finish_reason": "stop"}],
             "usage": dict(zip(("prompt_tokens", "completion_tokens", "total_tokens"), counts))}
 
@@ -118,9 +140,11 @@ def model_proxy_app(llm, *, model=None, provider=None, timeout=90):
         if provider is not None:
             kwargs["provider"] = provider
         try:
+            structured = "json_mode" in kwargs
             async with asyncio.timeout(kwargs["timeout"]):
-                result = await llm.acomplete(**kwargs, purpose="model-proxy.chat")
-            return web.json_response(envelope(result))
+                method = llm.acomplete_structured if structured else llm.acomplete
+                result = await method(**kwargs, purpose="model-proxy.chat")
+            return web.json_response(envelope(result, structured=structured))
         except PermissionError:
             return error(403, "Host denied inference or an override; review plugin permissions", "permission_error")
         except TimeoutError:

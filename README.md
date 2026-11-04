@@ -1,7 +1,8 @@
 # model-proxy for Hermes
 
 A Hermes plugin providing `hermes model-proxy`: a localhost, non-streaming text
-Chat Completions endpoint using only the public `ctx.llm.acomplete` API. Hermes
+Chat Completions endpoint using the public `ctx.llm.acomplete` and optional
+`ctx.llm.acomplete_structured` APIs. Hermes
 owns provider routing, authentication and refresh. The plugin registers one CLI
 command and no tools, hooks, skills, or agent loop. The Python distribution is
 `hermes-model-proxy`, with package `hermes_model_proxy`.
@@ -59,19 +60,35 @@ when the host denies them. No permissions/configuration are changed by serving.
 Host routing/fallback policy remains Hermes' responsibility.
 
 Supported fields are `messages`, optional `model`, `stream=false`, `n=1`,
-`max_tokens` (integer 1–32768, default 1024), `temperature` (finite 0–2), and
+`max_tokens` or its alias `max_completion_tokens` (integer 1–32768, default 1024;
+providing both is rejected), `temperature` (finite 0–2), and
 `timeout` (finite seconds, 0.1 through the configured ceiling). CLI `--timeout`
 sets the ceiling/default, 0.1–300 seconds (default 90). There must be 1–1024
 messages, each containing exactly `role` and string `content`; roles may be
-system/developer/user/assistant and are passed through unchanged. Booleans are
+system/developer/user/assistant and are passed through unchanged for plain requests. Booleans are
 not numeric values. Other fields, duplicate JSON keys, nonstandard JSON numbers,
-query parameters, multimodal content, streaming, tools/functions, Responses and
-structured output are unsupported. Requests are limited to 1,000,000 bytes.
+query parameters, multimodal content, streaming, tools/functions and Responses
+are unsupported. Requests are limited to 1,000,000 bytes.
+
+Optional `response_format: {"type":"json_object"}` uses the host's
+`acomplete_structured` method with JSON mode and native text input. This requires
+a compatible Hermes exposing that method and a provider supporting the host's
+JSON response format. There is no plain-text fallback or guarantee of constrained
+decoding. JSON requests accept only one nonempty user message, optionally preceded
+by one system message; other layouts are rejected because the facade rebuilds
+structured messages. The host adds JSON instructions. Plain requests retain all
+message roles and ordering. Extra response-format keys, `text`, and `json_schema`
+formats are rejected; schema support is outside this scoped JSON judge contract.
+For example, ValleyTalk can send `messages: [{"role":"user","content":"..."}]`,
+`response_format: {"type":"json_object"}`, and `max_completion_tokens: 2048`.
 
 Responses use the OpenAI text completion envelope, with host-returned text,
 actual token usage supplied by the facade, and validated model/provider
-attribution. Usage is not estimated by the plugin; Hermes may report zero when
-the provider omits counts. The facade exposes no finish reason, so `stop` denotes
+attribution. JSON responses serialize the facade's validated object as assistant
+content; missing/invalid parsed objects or non-JSON results fail with HTTP 502.
+A host lacking the structured method also returns 502. Usage is not estimated by
+the plugin; Hermes may report zero when the provider omits counts. The facade
+exposes no finish reason, so `stop` denotes
 a returned text completion and cannot distinguish provider token truncation.
 Errors contain fixed messages rather than exceptions, prompts or credentials.
 No client credentials are forwarded; common credential headers are rejected.
@@ -79,7 +96,7 @@ No CORS is enabled. Host/Origin/Sec-Fetch checks protect the
 listener: use native clients and the printed numeric URL. Other local processes
 can still make requests and incur inference costs; there is no local client auth.
 
-On disconnect or timeout the request directly awaiting `acomplete` is cancelled;
+On disconnect or timeout the request directly awaiting the facade is cancelled;
 the plugin creates no background inference tasks or upstream sessions. Listener
 and signal handlers are cleaned up on exit. Host/provider cancellation behavior
 and remote work completion are outside this plugin's control. Embedded callers
