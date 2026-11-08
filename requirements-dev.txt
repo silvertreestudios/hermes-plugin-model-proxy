@@ -4,3 +4,5 @@ pluggy==1.6.0
 pathspec==1.1.1
 trove-classifiers==2026.9.21.13
 ruff==0.16.0
+# SDK transport integration tests only; not a plugin runtime dependency.
+openai==2.24.0

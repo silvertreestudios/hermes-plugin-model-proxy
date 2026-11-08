@@ -10,11 +10,23 @@ import time
 import uuid
 
 from aiohttp import web
+from hermes_constants import VALID_REASONING_EFFORTS, parse_reasoning_effort
 
 from .server import listening
 
+REASONING_TASKS = {effort: f"model_proxy_reflection_{effort}"
+                   for effort in ("none", *VALID_REASONING_EFFORTS)}
+
 BODY_LIMIT = 1_000_000
 _IDENTIFIER = re.compile(r"[A-Za-z0-9/][A-Za-z0-9._:/@+-]{0,199}\Z")
+
+
+def reasoning_effort(value):
+    """Normalize the HTTP string using the host's public reasoning contract."""
+    parsed = parse_reasoning_effort(value) if type(value) is str else None
+    if parsed is None:
+        raise ValueError("Invalid reasoning effort")
+    return parsed["effort"] if parsed.get("enabled") else "none"
 
 
 def identifier(value):
@@ -33,7 +45,7 @@ def number(value, low, high, *, integer=False):
 def parse_request(body, *, model=None, timeout=90):
     if not isinstance(body, dict) or set(body) - {
         "messages", "model", "stream", "n", "max_tokens", "max_completion_tokens",
-        "temperature", "timeout", "response_format"
+        "temperature", "timeout", "response_format", "reasoning_effort"
     }:
         raise ValueError("Unsupported request fields")
     messages = body.get("messages")
@@ -75,6 +87,8 @@ def parse_request(body, *, model=None, timeout=90):
                       json_mode=True)
         if len(messages) == 2:
             kwargs["system_prompt"] = messages[0]["content"]
+    if "reasoning_effort" in body:
+        kwargs["task"] = REASONING_TASKS[reasoning_effort(body["reasoning_effort"])]
     return kwargs
 
 
@@ -105,7 +119,31 @@ def envelope(result, *, structured=False):
             "usage": dict(zip(("prompt_tokens", "completion_tokens", "total_tokens"), counts))}
 
 
-def model_proxy_app(llm, *, model=None, provider=None, timeout=90):
+def verify_reasoning_config(effort, *, model=None, provider=None):
+    """Require inherited task routing without resolving the active route.
+
+    Match host task normalization: strip both fields, and case-fold only model
+    auto. Explicit null is stringified by the host and is not inheritance.
+    Hermes owns request route permissions, resolution, and result attribution.
+    """
+    from hermes_cli.config import load_config_readonly
+    config = load_config_readonly()
+    auxiliary = config.get("auxiliary", {})
+    task = auxiliary.get(REASONING_TASKS[effort], {}) if isinstance(auxiliary, dict) else None
+    if not isinstance(task, dict):
+        raise PermissionError("Invalid reflection task configuration")
+    effective = {"reasoning_effort": effort, **task}
+    if (parse_reasoning_effort(effective.get("reasoning_effort")) != parse_reasoning_effort(effort)
+            or effective.get("extra_body") not in (None, {})
+            or any(str(effective.get(k, "")).strip() for k in ("base_url", "api_key"))
+            or any(effective.get(k) for k in ("key_env", "api_key_env",
+                                            "api_mode", "fallback_chain"))
+            or str(effective.get("provider", "")).strip() not in ("", "auto")
+            or str(effective.get("model", "")).strip().lower() not in ("", "auto")):
+        raise PermissionError("Reflection task configuration conflicts with requested reasoning")
+
+
+def model_proxy_app(llm, *, model=None, provider=None, timeout=90, reasoning_config_check=None):
     number(timeout, 0.1, 300)
     if model is not None:
         identifier(model)
@@ -140,6 +178,12 @@ def model_proxy_app(llm, *, model=None, provider=None, timeout=90):
         if provider is not None:
             kwargs["provider"] = provider
         try:
+            if "task" in kwargs:
+                if reasoning_config_check is None:
+                    raise PermissionError("Reasoning configuration check unavailable")
+                effort = next(k for k, v in REASONING_TASKS.items() if v == kwargs["task"])
+                reasoning_config_check(
+                    effort, model=kwargs.get("model"), provider=provider)
             structured = "json_mode" in kwargs
             async with asyncio.timeout(kwargs["timeout"]):
                 method = llm.acomplete_structured if structured else llm.acomplete
@@ -182,7 +226,7 @@ def setup_cli(parser):
     parser.add_argument("--provider", type=identifier, help="Host-gated provider override")
 
 
-async def serve(llm, args):
+async def serve(llm, args, *, reasoning_config_check=None):
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     registered = []
@@ -190,7 +234,8 @@ async def serve(llm, args):
         for sig in (signal.SIGTERM, signal.SIGINT):
             loop.add_signal_handler(sig, stop.set)
             registered.append(sig)
-        app = model_proxy_app(llm, model=args.model, provider=args.provider, timeout=args.timeout)
+        app = model_proxy_app(llm, model=args.model, provider=args.provider, timeout=args.timeout,
+                              reasoning_config_check=reasoning_config_check)
         async with listening(app, port=args.port) as url:
             print(url + "/v1", flush=True)
             await stop.wait()
@@ -200,13 +245,18 @@ async def serve(llm, args):
 
 
 def register(ctx):
+    for effort, task in REASONING_TASKS.items():
+        ctx.register_auxiliary_task(
+            task, display_name=f"Model proxy reflection {effort}",
+            description=f"Host-managed {effort} reasoning for the model proxy",
+            defaults={"reasoning_effort": effort})
     def run(args):
         for name in ("aiohttp.server", "aiohttp.access"):
             logger = logging.getLogger(name)
             logger.handlers = [logging.NullHandler()]
             logger.propagate = False
         try:
-            asyncio.run(serve(ctx.llm, args))
+            asyncio.run(serve(ctx.llm, args, reasoning_config_check=verify_reasoning_config))
         except KeyboardInterrupt:
             return 0
         except Exception:

@@ -59,6 +59,63 @@ active-selection requests require neither. Explicit overrides fail with HTTP 403
 when the host denies them. No permissions/configuration are changed by serving.
 Host routing/fallback policy remains Hermes' responsibility.
 
+Optional `reasoning_effort` accepts Hermes' public string levels: `minimal`,
+`low`, `medium`, `high`, `xhigh`, `max`, `ultra`, and `none` to request disabled
+reasoning. Normalization follows the host parser: surrounding whitespace and case
+are normalized; string aliases `false` and `disabled` mean `none`. Non-string
+values (including JSON booleans and objects), unknown levels, and client task or
+extra-body selectors are rejected before inference. Omitting the field preserves
+the ordinary host route and adds no reasoning configuration.
+
+Each canonical effort uses a finite plugin-owned auxiliary task named
+`model_proxy_reflection_<effort>` with matching `reasoning_effort` defaults,
+registered using the host public API. Requests use the public LLM facade; active
+selection needs no model/provider override grants. There is no Sol or Codex
+restriction. Explicit selections remain subject to the existing host permission
+gates. Conflicting task effort, extra body, routing or fallback configuration fails
+closed with HTTP 403, including task credential selectors `api_key`, `key_env`,
+and `api_key_env`. Task routes must inherit: provider may be absent, blank, or
+`auto` (case-sensitive after stripping); model may be absent, blank, or `auto`
+(case-insensitive after stripping). Explicit null and all concrete task routes
+are rejected, even when they match the request. Preflight reads task configuration
+without resolving the active route, discovering models, or reading credentials.
+Hermes owns subsequent route normalization and
+fallback; returned model/provider attribution comes from its facade and passes
+the proxy envelope identifier checks. It need not equal the raw selection (for
+example, a vendor-prefixed model can return a bare model ID).
+No profile settings or capability grants are written.
+
+Hermes owns provider capability handling, clamping, disabled semantics, and
+recovery. Accepting a host effort does not promise that every provider supports
+that literal tier, or that disabled thinking is available on every model. Offline
+coverage runs the real PluginLlm ownership gate and auxiliary planner through the
+Codex adapter and SDK to an httpx mock transport for all host levels and disabled
+reasoning. Assertions follow the host's clamped wire output; high remains high on
+the tested route. No live provider claims are made.
+
+The response does not advertise an effective effort: Hermes can strip reasoning
+after a provider rejects that field. Thus a successful response is not an
+attestation that the provider honored the requested reasoning control. A strict
+guarantee across recovery attempts requires a host API that disables such
+recovery or attests each attempt. The installed auxiliary call path does not
+consume task `max_retries`; SDK `max_retries=0` does not disable the host recovery
+ladder. No proxy workaround changes that behavior. Config is checked before
+dispatch; concurrent configuration edits are not an atomic snapshot with the host
+planner. Live provider verification remains an operator step.
+
+For an isolated source launch, with the intended profile already active in the
+shell, an operator can create a temporary project discovery directory (no install
+or profile edits). Choose an unused port and leave the existing listener running:
+
+```sh
+proxy_source="$PWD"
+proxy_project=$(mktemp -d "${TMPDIR:?Set TMPDIR to profile scratch}/model-proxy.XXXXXX")
+mkdir -p "$proxy_project/.hermes/plugins"
+ln -s "$proxy_source" "$proxy_project/.hermes/plugins/model-proxy"
+(cd "$proxy_project" && HERMES_ENABLE_PROJECT_PLUGINS=1 hermes model-proxy \
+  --port 18647 --model gpt-6.1-sol --timeout 300)
+```
+
 Supported fields are `messages`, optional `model`, `stream=false`, `n=1`,
 `max_tokens` or its alias `max_completion_tokens` (integer 1–32768, default 1024;
 providing both is rejected), `temperature` (finite 0–2), and
