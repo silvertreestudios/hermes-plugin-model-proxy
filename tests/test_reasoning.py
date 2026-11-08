@@ -182,6 +182,20 @@ class Reasoning(unittest.IsolatedAsyncioTestCase):
                 credential_reader.assert_not_called()
                 llm.acomplete.assert_not_called()
 
+    async def test_falsy_endpoint_and_key_overrides_denied(self):
+        for field in ("base_url", "api_key"):
+            for value in (None, False, 0):
+                llm = SimpleNamespace(acomplete=AsyncMock())
+                with patch("hermes_cli.config.load_config_readonly", return_value={
+                        "auxiliary": {REASONING_TASKS["high"]: {field: value}}}):
+                    async with listening(model_proxy_app(llm, reasoning_config_check=
+                            verify_reasoning_config)) as url, ClientSession() as session:
+                        async with session.post(url + "/v1/chat/completions", json={
+                                "reasoning_effort": "high", "messages": [
+                                    {"role": "user", "content": "hello"}]}) as response:
+                            self.assertEqual(response.status, 403)
+                llm.acomplete.assert_not_called()
+
     async def test_config_denied_before_dispatch(self):
         for effort in ("none", *VALID_REASONING_EFFORTS):
             for task in ({"reasoning_effort": "low" if effort != "low" else "none"},

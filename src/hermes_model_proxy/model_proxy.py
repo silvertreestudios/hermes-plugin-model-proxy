@@ -135,7 +135,8 @@ def verify_reasoning_config(effort, *, model=None, provider=None):
     effective = {"reasoning_effort": effort, **task}
     if (parse_reasoning_effort(effective.get("reasoning_effort")) != parse_reasoning_effort(effort)
             or effective.get("extra_body") not in (None, {})
-            or any(effective.get(k) for k in ("base_url", "api_key", "key_env", "api_key_env",
+            or any(str(effective.get(k, "")).strip() for k in ("base_url", "api_key"))
+            or any(effective.get(k) for k in ("key_env", "api_key_env",
                                             "api_mode", "fallback_chain"))
             or str(effective.get("provider", "")).strip() not in ("", "auto")
             or str(effective.get("model", "")).strip().lower() not in ("", "auto")):
