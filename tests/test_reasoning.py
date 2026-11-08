@@ -2,11 +2,12 @@
 import json
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from aiohttp import ClientSession
+from hermes_constants import VALID_REASONING_EFFORTS, parse_reasoning_effort
 from hermes_model_proxy.model_proxy import (
-    REFLECTION_HIGH_TASK, model_proxy_app, parse_request, register, verify_high_config,
+    REASONING_TASKS, model_proxy_app, parse_request, register, verify_reasoning_config,
 )
 from hermes_model_proxy.server import listening
 
@@ -16,74 +17,101 @@ class Reasoning(unittest.IsolatedAsyncioTestCase):
     def test_validation_and_config(self, selection):
         base = {"messages": [{"role": "user", "content": "hello"}]}
         self.assertNotIn("task", parse_request(base))
-        for value in (None, True, 1, [], {}, "low", "HIGH", "high "):
+        for value in (None, True, False, 1, [], {}, "bogus", ""):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 parse_request({**base, "reasoning_effort": value})
         for field in ("task", "extra_body", "reasoning"):
             with self.assertRaises(ValueError):
                 parse_request({**base, field: {}})
-        self.assertEqual(parse_request({**base, "reasoning_effort": "high"})["task"],
-                         REFLECTION_HIGH_TASK)
-        for task in ({}, {"reasoning_effort": "high"}):
+        for effort in ("none", *VALID_REASONING_EFFORTS):
+            for value in (effort, " " + effort.upper() + " "):
+                self.assertEqual(parse_request({**base, "reasoning_effort": value})["task"],
+                                 REASONING_TASKS[effort])
+            for task in ({}, {"reasoning_effort": effort}):
+                with patch("hermes_cli.config.load_config_readonly", return_value={
+                        "auxiliary": {REASONING_TASKS[effort]: task}}):
+                    verify_reasoning_config(effort)
+            for task in ({"reasoning_effort": "bad"}, {"reasoning_effort": None},
+                         {"extra_body": {"reasoning": {"effort": "low"}}},
+                         {"provider": "other"}, {"model": "other"},
+                         {"base_url": "custom"}, {"api_key": "synthetic"},
+                         {"api_mode": "custom"}, {"fallback_chain": ["other"]}):
+                with patch("hermes_cli.config.load_config_readonly", return_value={
+                        "auxiliary": {REASONING_TASKS[effort]: task}}), self.assertRaises(PermissionError):
+                    verify_reasoning_config(effort)
+        for alias in ("false", "disabled", " NONE "):
+            self.assertEqual(parse_reasoning_effort(alias), {"enabled": False})
+            self.assertEqual(parse_request({**base, "reasoning_effort": alias})["task"],
+                             REASONING_TASKS["none"])
+
+    def test_selected_route_and_normalized_task_config(self, selection):
+        for effort in ("none", *VALID_REASONING_EFFORTS):
+            task = {"reasoning_effort": parse_reasoning_effort(effort),
+                    "model": "chosen", "provider": "synthetic"}
+            selection.return_value = "synthetic"
             with patch("hermes_cli.config.load_config_readonly", return_value={
-                    "auxiliary": {REFLECTION_HIGH_TASK: task}}):
-                verify_high_config()
-        selection.return_value = "other"
-        with self.assertRaises(PermissionError):
-            verify_high_config()
-        selection.return_value = "openai-codex"
-        for task in ({"reasoning_effort": "low"}, {"reasoning_effort": None},
-                     {"extra_body": {"reasoning": {"effort": "low"}}},
-                     {"provider": "other"}, {"fallback_chain": [{"provider": "other"}]}):
+                    "auxiliary": {REASONING_TASKS[effort]: task}}):
+                self.assertEqual(verify_reasoning_config(
+                    effort, model="chosen", provider="synthetic"), ("chosen", "synthetic"))
+                selection.assert_called_with("synthetic")
+        selection.return_value = "auto"
+        with patch("hermes_cli.config.load_config_readonly", return_value={}):
+            self.assertEqual(verify_reasoning_config("none"), (None, None))
+
+    def test_all_effort_conflicts(self, selection):
+        for effort in ("none", *VALID_REASONING_EFFORTS):
+            other = "high" if effort != "high" else "none"
             with patch("hermes_cli.config.load_config_readonly", return_value={
-                    "auxiliary": {REFLECTION_HIGH_TASK: task}}), self.assertRaises(PermissionError):
-                verify_high_config()
+                    "auxiliary": {REASONING_TASKS[effort]: {"reasoning_effort": other}}}), \
+                    self.assertRaises(PermissionError):
+                verify_reasoning_config(effort)
 
     async def test_http_fail_closed(self, selection):
-        from unittest.mock import AsyncMock
         llm = SimpleNamespace(acomplete=AsyncMock())
-        body = {"model": "gpt-6.1-sol", "reasoning_effort": "high",
-                "messages": [{"role": "user", "content": "hello"}]}
-        for provider, check in ((None, None), ("other", verify_high_config),
-                                ("openai-codex", None),
-                                ("openai-codex", lambda: (_ for _ in ()).throw(PermissionError()))):
-            async with listening(model_proxy_app(llm, provider=provider,
-                                                 high_config_check=check)) as url, ClientSession() as session:
-                async with session.post(url + "/v1/chat/completions", json=body) as response:
-                    self.assertEqual(response.status, 403)
+        base = {"messages": [{"role": "user", "content": "hello"}]}
+        async with listening(model_proxy_app(llm)) as url, ClientSession() as session:
+            for value in (None, True, False, 1, [], {}, "bad", "", *VALID_REASONING_EFFORTS, "none"):
+                async with session.post(url + "/v1/chat/completions", json={
+                        **base, "reasoning_effort": value}) as response:
+                    self.assertEqual(response.status, 403 if value in (*VALID_REASONING_EFFORTS, "none")
+                                     else 400)
         llm.acomplete.assert_not_called()
 
-    async def test_wrong_actual_route_rejected(self, selection):
-        from unittest.mock import AsyncMock
-        body = {"model": "gpt-6.1-sol", "reasoning_effort": "high",
-                "messages": [{"role": "user", "content": "hello"}]}
-        for provider, model, expected_status in (
-                ("other", "gpt-6.1-sol", 502),
-                ("openai-codex", "other", 502),
-                ("openai-codex", "gpt-6.1-sol", 200)):
-            llm = SimpleNamespace(acomplete=AsyncMock(return_value=SimpleNamespace(
-                provider=provider, model=model, text="answer",
-                usage=SimpleNamespace(input_tokens=1, output_tokens=1, total_tokens=2))))
-            with patch("hermes_cli.config.load_config_readonly", return_value={}):
-                async with listening(model_proxy_app(
-                        llm, high_config_check=verify_high_config)) as url, ClientSession() as session:
-                    async with session.post(url + "/v1/chat/completions", json=body) as response:
-                        self.assertEqual(response.status, expected_status)
-                        if expected_status == 200:
-                            payload = await response.json()
-                            self.assertEqual(payload["choices"][0]["message"]["content"], "answer")
-            self.assertNotIn("provider", llm.acomplete.call_args.kwargs)
+    async def test_route_guards_and_valid_controls(self, selection):
+        for active_provider in ("openai-codex", "synthetic"):
+            selection.return_value = active_provider
+            for requested_model in (None, "chosen"):
+                expected_model = requested_model or "active-model"
+                for mutated in (None, "provider", "model"):
+                    reply = SimpleNamespace(provider=active_provider, model=expected_model,
+                                            text="answer", usage=SimpleNamespace(
+                                                input_tokens=1, output_tokens=1, total_tokens=2))
+                    if mutated:
+                        setattr(reply, mutated, "unexpected")
+                    llm = SimpleNamespace(acomplete=AsyncMock(return_value=reply))
+                    body = {"reasoning_effort": "high", "messages": [
+                        {"role": "user", "content": "hello"}]}
+                    if requested_model:
+                        body["model"] = requested_model
+                    with patch("hermes_cli.config.load_config_readonly", return_value={
+                            "model": {"default": "active-model"}}):
+                        async with listening(model_proxy_app(llm, reasoning_config_check=
+                                                             verify_reasoning_config)) as url, \
+                                ClientSession() as session:
+                            async with session.post(url + "/v1/chat/completions", json=body) as response:
+                                self.assertEqual(response.status, 502 if mutated else 200)
+                    self.assertNotIn("provider", llm.acomplete.call_args.kwargs)
 
-    async def test_wrong_active_provider_rejected_before_dispatch(self, selection):
-        from unittest.mock import AsyncMock
-        selection.return_value = "other"
+    async def test_config_denied_before_dispatch(self, selection):
         llm = SimpleNamespace(acomplete=AsyncMock())
-        body = {"model": "gpt-6.1-sol", "reasoning_effort": "high",
-                "messages": [{"role": "user", "content": "hello"}]}
-        async with listening(model_proxy_app(
-                llm, high_config_check=verify_high_config)) as url, ClientSession() as session:
-            async with session.post(url + "/v1/chat/completions", json=body) as response:
-                self.assertEqual(response.status, 403)
+        with patch("hermes_cli.config.load_config_readonly", return_value={
+                "auxiliary": {REASONING_TASKS["high"]: {"reasoning_effort": "low"}}}):
+            async with listening(model_proxy_app(llm, reasoning_config_check=
+                                                 verify_reasoning_config)) as url, ClientSession() as session:
+                async with session.post(url + "/v1/chat/completions", json={
+                        "reasoning_effort": "high", "messages": [
+                            {"role": "user", "content": "hello"}]}) as response:
+                    self.assertEqual(response.status, 403)
         llm.acomplete.assert_not_called()
 
     async def test_real_owned_task_to_codex_wire(self, selection):
@@ -98,7 +126,9 @@ class Reasoning(unittest.IsolatedAsyncioTestCase):
         ctx = PluginContext(PluginManifest(name="model-proxy"), manager)
         register(ctx)
         entries = list(manager._aux_tasks.values())
-        self.assertEqual(entries[0]["defaults"]["reasoning_effort"], "high")
+        self.assertEqual({e["key"] for e in entries}, set(REASONING_TASKS.values()))
+        self.assertEqual(len(entries), len(VALID_REASONING_EFFORTS) + 1)
+        self.assertTrue(all(e["plugin"] == "model-proxy" for e in entries))
         wires = []
 
         def transport(request):
@@ -126,22 +156,41 @@ class Reasoning(unittest.IsolatedAsyncioTestCase):
                     patch("hermes_cli.plugins.get_plugin_auxiliary_tasks", return_value=entries), \
                     patch.object(aux, "_resolve_call_client", return_value=(
                         client, "gpt-6.1-sol", "openai-codex", "openai-codex")) as resolver:
+                for task in ("model_proxy_reflection_arbitrary", "vision"):
+                    with self.assertRaises(PermissionError):
+                        await llm.acomplete(task=task, messages=[{"role": "user", "content": "hello"}])
                 async with listening(model_proxy_app(
-                        llm, high_config_check=verify_high_config)) as url, \
+                        llm, reasoning_config_check=verify_reasoning_config)) as url, \
                         ClientSession() as session:
-                    for explicit in (False, True):
+                    for effort in (None, "none", *VALID_REASONING_EFFORTS, " DISABLED ", "false"):
                         body = {"model": "gpt-6.1-sol", "messages": [
                             {"role": "user", "content": "hello"}]}
-                        if explicit:
-                            body["reasoning_effort"] = "high"
+                        if effort is not None:
+                            body["reasoning_effort"] = effort
                         async with session.post(url + "/v1/chat/completions", json=body) as response:
                             self.assertEqual(response.status, 200, await response.text())
                 for call in resolver.call_args_list:
                     self.assertIsNone(call.kwargs["provider"])
                     self.assertEqual(call.kwargs["model"], "gpt-6.1-sol")
                 self.assertNotIn("reasoning", wires[0])
-                self.assertEqual(wires[1]["reasoning"]["effort"], "high")
-                self.assertEqual(wires[1]["model"], "gpt-6.1-sol")
+                from agent.reasoning_effort import clamp_effort, codex_supported_efforts
+                for wire, effort in zip(wires[1:], ("none", *VALID_REASONING_EFFORTS, "none", "none"), strict=True):
+                    self.assertEqual(wire["reasoning"]["effort"],
+                                     clamp_effort(effort, codex_supported_efforts("gpt-6.1-sol")))
+                    self.assertEqual(wire["model"], "gpt-6.1-sol")
+                self.assertEqual(wires[5]["reasoning"]["effort"], "high")
+                active_llm = make_plugin_llm_for_test(plugin_id="model-proxy", policy=_TrustPolicy(
+                    plugin_id="model-proxy"))
+                async with listening(model_proxy_app(
+                        active_llm, reasoning_config_check=verify_reasoning_config)) as url, \
+                        ClientSession() as session:
+                    async with session.post(url + "/v1/chat/completions", json={
+                            "reasoning_effort": "high", "messages": [
+                                {"role": "user", "content": "hello"}]}) as response:
+                        self.assertEqual(response.status, 200, await response.text())
+                self.assertIsNone(resolver.call_args.kwargs["provider"])
+                self.assertIsNone(resolver.call_args.kwargs["model"])
+                self.assertEqual(wires[-1]["reasoning"]["effort"], "high")
         finally:
             sdk.close()
             manager.unload()

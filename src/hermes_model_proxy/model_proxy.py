@@ -10,13 +10,23 @@ import time
 import uuid
 
 from aiohttp import web
+from hermes_constants import VALID_REASONING_EFFORTS, parse_reasoning_effort
 
 from .server import listening
 
-REFLECTION_HIGH_TASK = "model_proxy_reflection_high"
-HIGH_DEFAULTS = {"reasoning_effort": "high"}
+REASONING_TASKS = {effort: f"model_proxy_reflection_{effort}"
+                   for effort in ("none", *VALID_REASONING_EFFORTS)}
+
 BODY_LIMIT = 1_000_000
 _IDENTIFIER = re.compile(r"[A-Za-z0-9/][A-Za-z0-9._:/@+-]{0,199}\Z")
+
+
+def reasoning_effort(value):
+    """Normalize the HTTP string using the host's public reasoning contract."""
+    parsed = parse_reasoning_effort(value) if type(value) is str else None
+    if parsed is None:
+        raise ValueError("Invalid reasoning effort")
+    return parsed["effort"] if parsed.get("enabled") else "none"
 
 
 def identifier(value):
@@ -78,9 +88,7 @@ def parse_request(body, *, model=None, timeout=90):
         if len(messages) == 2:
             kwargs["system_prompt"] = messages[0]["content"]
     if "reasoning_effort" in body:
-        if type(body["reasoning_effort"]) is not str or body["reasoning_effort"] != "high":
-            raise ValueError("Only reasoning_effort high is supported")
-        kwargs["task"] = REFLECTION_HIGH_TASK
+        kwargs["task"] = REASONING_TASKS[reasoning_effort(body["reasoning_effort"])]
     return kwargs
 
 
@@ -111,27 +119,34 @@ def envelope(result, *, structured=False):
             "usage": dict(zip(("prompt_tokens", "completion_tokens", "total_tokens"), counts))}
 
 
-def verify_high_config():
-    """Read only our task settings; reject controls that could override the defaults."""
+def verify_reasoning_config(effort, *, model=None, provider=None):
+    """Reject task controls that change the requested effort or selected route.
+
+    Public selection/config APIs do not resolve credentials or clients. An auto
+    provider or unspecified active model cannot be pinned before host resolution.
+    """
     from hermes_cli.config import load_config_readonly
     from hermes_cli.runtime_provider import resolve_requested_provider
-    if resolve_requested_provider() != "openai-codex":
-        raise PermissionError("High reasoning requires the active Codex provider")
     config = load_config_readonly()
+    selected_provider = resolve_requested_provider(provider)
+    model_config = config.get("model", {})
+    selected_model = model or (model_config.get("default") if isinstance(model_config, dict)
+                               else model_config)
     auxiliary = config.get("auxiliary", {})
-    task = auxiliary.get(REFLECTION_HIGH_TASK, {})
+    task = auxiliary.get(REASONING_TASKS[effort], {}) if isinstance(auxiliary, dict) else None
     if not isinstance(task, dict):
         raise PermissionError("Invalid reflection task configuration")
-    effective = {**HIGH_DEFAULTS, **task}
-    if (effective.get("reasoning_effort") != "high"
+    effective = {"reasoning_effort": effort, **task}
+    if (parse_reasoning_effort(effective.get("reasoning_effort")) != parse_reasoning_effort(effort)
             or effective.get("extra_body") not in (None, {})
             or any(effective.get(k) for k in ("base_url", "api_key", "api_mode", "fallback_chain"))
-            or effective.get("provider", "auto") not in ("auto", "openai-codex")
-            or effective.get("model", "") not in ("", "gpt-6.1-sol")):
-        raise PermissionError("Reflection task configuration conflicts with high reasoning")
+            or effective.get("provider", "auto") not in ("auto", selected_provider)
+            or effective.get("model", "") not in ("", selected_model)):
+        raise PermissionError("Reflection task configuration conflicts with requested reasoning")
+    return selected_model, selected_provider if selected_provider != "auto" else None
 
 
-def model_proxy_app(llm, *, model=None, provider=None, timeout=90, high_config_check=None):
+def model_proxy_app(llm, *, model=None, provider=None, timeout=90, reasoning_config_check=None):
     number(timeout, 0.1, 300)
     if model is not None:
         identifier(model)
@@ -167,16 +182,18 @@ def model_proxy_app(llm, *, model=None, provider=None, timeout=90, high_config_c
             kwargs["provider"] = provider
         try:
             if "task" in kwargs:
-                if (high_config_check is None or provider not in (None, "openai-codex")
-                        or kwargs.get("model") != "gpt-6.1-sol"):
-                    raise PermissionError("High reasoning requires the supported explicit route")
-                high_config_check()
+                if reasoning_config_check is None:
+                    raise PermissionError("Reasoning configuration check unavailable")
+                effort = next(k for k, v in REASONING_TASKS.items() if v == kwargs["task"])
+                expected_model, expected_provider = reasoning_config_check(
+                    effort, model=kwargs.get("model"), provider=provider)
             structured = "json_mode" in kwargs
             async with asyncio.timeout(kwargs["timeout"]):
                 method = llm.acomplete_structured if structured else llm.acomplete
                 result = await method(**kwargs, purpose="model-proxy.chat")
-            if "task" in kwargs and (result.model != "gpt-6.1-sol"
-                                     or result.provider != "openai-codex"):
+            if "task" in kwargs and (
+                    (expected_model and result.model != expected_model)
+                    or (expected_provider and result.provider != expected_provider)):
                 raise ValueError("Unexpected reflection route attribution")
             return web.json_response(envelope(result, structured=structured))
         except PermissionError:
@@ -216,7 +233,7 @@ def setup_cli(parser):
     parser.add_argument("--provider", type=identifier, help="Host-gated provider override")
 
 
-async def serve(llm, args, *, high_config_check=None):
+async def serve(llm, args, *, reasoning_config_check=None):
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     registered = []
@@ -225,7 +242,7 @@ async def serve(llm, args, *, high_config_check=None):
             loop.add_signal_handler(sig, stop.set)
             registered.append(sig)
         app = model_proxy_app(llm, model=args.model, provider=args.provider, timeout=args.timeout,
-                              high_config_check=high_config_check)
+                              reasoning_config_check=reasoning_config_check)
         async with listening(app, port=args.port) as url:
             print(url + "/v1", flush=True)
             await stop.wait()
@@ -235,17 +252,18 @@ async def serve(llm, args, *, high_config_check=None):
 
 
 def register(ctx):
-    ctx.register_auxiliary_task(
-        REFLECTION_HIGH_TASK, display_name="Model proxy reflection high",
-        description="High reasoning for the model proxy reflection route",
-        defaults=HIGH_DEFAULTS.copy())
+    for effort, task in REASONING_TASKS.items():
+        ctx.register_auxiliary_task(
+            task, display_name=f"Model proxy reflection {effort}",
+            description=f"Host-managed {effort} reasoning for the model proxy",
+            defaults={"reasoning_effort": effort})
     def run(args):
         for name in ("aiohttp.server", "aiohttp.access"):
             logger = logging.getLogger(name)
             logger.handlers = [logging.NullHandler()]
             logger.propagate = False
         try:
-            asyncio.run(serve(ctx.llm, args, high_config_check=verify_high_config))
+            asyncio.run(serve(ctx.llm, args, reasoning_config_check=verify_reasoning_config))
         except KeyboardInterrupt:
             return 0
         except Exception:
