@@ -13,6 +13,8 @@ from aiohttp import web
 
 from .server import listening
 
+REFLECTION_HIGH_TASK = "model_proxy_reflection_high"
+HIGH_DEFAULTS = {"reasoning_effort": "high"}
 BODY_LIMIT = 1_000_000
 _IDENTIFIER = re.compile(r"[A-Za-z0-9/][A-Za-z0-9._:/@+-]{0,199}\Z")
 
@@ -33,7 +35,7 @@ def number(value, low, high, *, integer=False):
 def parse_request(body, *, model=None, timeout=90):
     if not isinstance(body, dict) or set(body) - {
         "messages", "model", "stream", "n", "max_tokens", "max_completion_tokens",
-        "temperature", "timeout", "response_format"
+        "temperature", "timeout", "response_format", "reasoning_effort"
     }:
         raise ValueError("Unsupported request fields")
     messages = body.get("messages")
@@ -75,6 +77,10 @@ def parse_request(body, *, model=None, timeout=90):
                       json_mode=True)
         if len(messages) == 2:
             kwargs["system_prompt"] = messages[0]["content"]
+    if "reasoning_effort" in body:
+        if type(body["reasoning_effort"]) is not str or body["reasoning_effort"] != "high":
+            raise ValueError("Only reasoning_effort high is supported")
+        kwargs["task"] = REFLECTION_HIGH_TASK
     return kwargs
 
 
@@ -105,7 +111,27 @@ def envelope(result, *, structured=False):
             "usage": dict(zip(("prompt_tokens", "completion_tokens", "total_tokens"), counts))}
 
 
-def model_proxy_app(llm, *, model=None, provider=None, timeout=90):
+def verify_high_config():
+    """Read only our task settings; reject controls that could override the defaults."""
+    from hermes_cli.config import load_config_readonly
+    from hermes_cli.runtime_provider import resolve_requested_provider
+    if resolve_requested_provider() != "openai-codex":
+        raise PermissionError("High reasoning requires the active Codex provider")
+    config = load_config_readonly()
+    auxiliary = config.get("auxiliary", {})
+    task = auxiliary.get(REFLECTION_HIGH_TASK, {})
+    if not isinstance(task, dict):
+        raise PermissionError("Invalid reflection task configuration")
+    effective = {**HIGH_DEFAULTS, **task}
+    if (effective.get("reasoning_effort") != "high"
+            or effective.get("extra_body") not in (None, {})
+            or any(effective.get(k) for k in ("base_url", "api_key", "api_mode", "fallback_chain"))
+            or effective.get("provider", "auto") not in ("auto", "openai-codex")
+            or effective.get("model", "") not in ("", "gpt-6.1-sol")):
+        raise PermissionError("Reflection task configuration conflicts with high reasoning")
+
+
+def model_proxy_app(llm, *, model=None, provider=None, timeout=90, high_config_check=None):
     number(timeout, 0.1, 300)
     if model is not None:
         identifier(model)
@@ -140,10 +166,18 @@ def model_proxy_app(llm, *, model=None, provider=None, timeout=90):
         if provider is not None:
             kwargs["provider"] = provider
         try:
+            if "task" in kwargs:
+                if (high_config_check is None or provider not in (None, "openai-codex")
+                        or kwargs.get("model") != "gpt-6.1-sol"):
+                    raise PermissionError("High reasoning requires the supported explicit route")
+                high_config_check()
             structured = "json_mode" in kwargs
             async with asyncio.timeout(kwargs["timeout"]):
                 method = llm.acomplete_structured if structured else llm.acomplete
                 result = await method(**kwargs, purpose="model-proxy.chat")
+            if "task" in kwargs and (result.model != "gpt-6.1-sol"
+                                     or result.provider != "openai-codex"):
+                raise ValueError("Unexpected reflection route attribution")
             return web.json_response(envelope(result, structured=structured))
         except PermissionError:
             return error(403, "Host denied inference or an override; review plugin permissions", "permission_error")
@@ -182,7 +216,7 @@ def setup_cli(parser):
     parser.add_argument("--provider", type=identifier, help="Host-gated provider override")
 
 
-async def serve(llm, args):
+async def serve(llm, args, *, high_config_check=None):
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     registered = []
@@ -190,7 +224,8 @@ async def serve(llm, args):
         for sig in (signal.SIGTERM, signal.SIGINT):
             loop.add_signal_handler(sig, stop.set)
             registered.append(sig)
-        app = model_proxy_app(llm, model=args.model, provider=args.provider, timeout=args.timeout)
+        app = model_proxy_app(llm, model=args.model, provider=args.provider, timeout=args.timeout,
+                              high_config_check=high_config_check)
         async with listening(app, port=args.port) as url:
             print(url + "/v1", flush=True)
             await stop.wait()
@@ -200,13 +235,17 @@ async def serve(llm, args):
 
 
 def register(ctx):
+    ctx.register_auxiliary_task(
+        REFLECTION_HIGH_TASK, display_name="Model proxy reflection high",
+        description="High reasoning for the model proxy reflection route",
+        defaults=HIGH_DEFAULTS.copy())
     def run(args):
         for name in ("aiohttp.server", "aiohttp.access"):
             logger = logging.getLogger(name)
             logger.handlers = [logging.NullHandler()]
             logger.propagate = False
         try:
-            asyncio.run(serve(ctx.llm, args))
+            asyncio.run(serve(ctx.llm, args, high_config_check=verify_high_config))
         except KeyboardInterrupt:
             return 0
         except Exception:

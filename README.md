@@ -59,6 +59,42 @@ active-selection requests require neither. Explicit overrides fail with HTTP 403
 when the host denies them. No permissions/configuration are changed by serving.
 Host routing/fallback policy remains Hermes' responsibility.
 
+Explicit `reasoning_effort: "high"` uses the plugin-owned auxiliary task
+`model_proxy_reflection_high`, registered with `reasoning_effort: high` defaults.
+It requires a compatible host with `register_auxiliary_task`, explicit
+`gpt-6.1-sol` selection and active provider `openai-codex`. The public host
+selection API is checked before dispatch; omit `--provider` so no provider override
+grant is needed. Returned model/provider attribution is also checked. Other effort
+values/types and client task/extra-body selectors are rejected. Ordinary requests
+(including JSON judges) retain their existing route. Conflicting task effort,
+extra body, routing or fallback configuration fails closed with HTTP 403. No
+profile settings or capability grants are written.
+
+Offline coverage runs the real PluginLlm ownership gate and auxiliary planner
+through the Codex adapter and SDK to an httpx mock transport, asserting serialized
+`reasoning.effort: high`, including with an explicit model override. The response
+does not advertise an effective effort: Hermes owns provider retries and can strip
+reasoning after a provider rejects that field. A strict guarantee across recovery
+attempts requires a host API that disables such recovery or attests each attempt.
+The installed auxiliary call path does not consume task `max_retries`; SDK
+`max_retries=0` does not disable the host recovery ladder. The Codex adapter
+serializes high for Sol but does not enforce that effort on later recovery calls.
+Config is checked before dispatch; concurrent configuration edits are not an atomic
+snapshot with the host planner. Live provider verification remains an operator step.
+
+For an isolated source launch, with the intended profile already active in the
+shell, an operator can create a temporary project discovery directory (no install
+or profile edits). Choose an unused port and leave the existing listener running:
+
+```sh
+proxy_source="$PWD"
+proxy_project=$(mktemp -d "${TMPDIR:?Set TMPDIR to profile scratch}/model-proxy.XXXXXX")
+mkdir -p "$proxy_project/.hermes/plugins"
+ln -s "$proxy_source" "$proxy_project/.hermes/plugins/model-proxy"
+(cd "$proxy_project" && HERMES_ENABLE_PROJECT_PLUGINS=1 hermes model-proxy \
+  --port 18647 --model gpt-6.1-sol --timeout 300)
+```
+
 Supported fields are `messages`, optional `model`, `stream=false`, `n=1`,
 `max_tokens` or its alias `max_completion_tokens` (integer 1–32768, default 1024;
 providing both is rejected), `temperature` (finite 0–2), and
