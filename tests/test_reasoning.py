@@ -57,14 +57,21 @@ class Reasoning(unittest.IsolatedAsyncioTestCase):
         from unittest.mock import AsyncMock
         body = {"model": "gpt-6.1-sol", "reasoning_effort": "high",
                 "messages": [{"role": "user", "content": "hello"}]}
-        for provider, model in (("other", "gpt-6.1-sol"), ("openai-codex", "other")):
+        for provider, model, expected_status in (
+                ("other", "gpt-6.1-sol", 502),
+                ("openai-codex", "other", 502),
+                ("openai-codex", "gpt-6.1-sol", 200)):
             llm = SimpleNamespace(acomplete=AsyncMock(return_value=SimpleNamespace(
-                provider=provider, model=model)))
+                provider=provider, model=model, text="answer",
+                usage=SimpleNamespace(input_tokens=1, output_tokens=1, total_tokens=2))))
             with patch("hermes_cli.config.load_config_readonly", return_value={}):
                 async with listening(model_proxy_app(
                         llm, high_config_check=verify_high_config)) as url, ClientSession() as session:
                     async with session.post(url + "/v1/chat/completions", json=body) as response:
-                        self.assertEqual(response.status, 502)
+                        self.assertEqual(response.status, expected_status)
+                        if expected_status == 200:
+                            payload = await response.json()
+                            self.assertEqual(payload["choices"][0]["message"]["content"], "answer")
             self.assertNotIn("provider", llm.acomplete.call_args.kwargs)
 
     async def test_wrong_active_provider_rejected_before_dispatch(self, selection):
