@@ -120,10 +120,11 @@ def envelope(result, *, structured=False):
 
 
 def verify_reasoning_config(effort, *, model=None, provider=None):
-    """Reject task controls that change the requested effort or selected route.
+    """Reject task controls that change the requested effort or selection.
 
-    Public selection/config APIs do not resolve credentials or clients. An auto
-    provider or unspecified active model cannot be pinned before host resolution.
+    This preflight reads selection/config only, without resolving credentials or
+    clients. Hermes owns route resolution and result attribution, including aliases
+    and fallback; raw selections are not canonical result identifiers.
     """
     from hermes_cli.config import load_config_readonly
     from hermes_cli.runtime_provider import resolve_requested_provider
@@ -139,11 +140,11 @@ def verify_reasoning_config(effort, *, model=None, provider=None):
     effective = {"reasoning_effort": effort, **task}
     if (parse_reasoning_effort(effective.get("reasoning_effort")) != parse_reasoning_effort(effort)
             or effective.get("extra_body") not in (None, {})
-            or any(effective.get(k) for k in ("base_url", "api_key", "api_mode", "fallback_chain"))
+            or any(effective.get(k) for k in ("base_url", "api_key", "key_env", "api_key_env",
+                                            "api_mode", "fallback_chain"))
             or effective.get("provider", "auto") not in ("auto", selected_provider)
             or effective.get("model", "") not in ("", selected_model)):
         raise PermissionError("Reflection task configuration conflicts with requested reasoning")
-    return selected_model, selected_provider if selected_provider != "auto" else None
 
 
 def model_proxy_app(llm, *, model=None, provider=None, timeout=90, reasoning_config_check=None):
@@ -185,16 +186,12 @@ def model_proxy_app(llm, *, model=None, provider=None, timeout=90, reasoning_con
                 if reasoning_config_check is None:
                     raise PermissionError("Reasoning configuration check unavailable")
                 effort = next(k for k, v in REASONING_TASKS.items() if v == kwargs["task"])
-                expected_model, expected_provider = reasoning_config_check(
+                reasoning_config_check(
                     effort, model=kwargs.get("model"), provider=provider)
             structured = "json_mode" in kwargs
             async with asyncio.timeout(kwargs["timeout"]):
                 method = llm.acomplete_structured if structured else llm.acomplete
                 result = await method(**kwargs, purpose="model-proxy.chat")
-            if "task" in kwargs and (
-                    (expected_model and result.model != expected_model)
-                    or (expected_provider and result.provider != expected_provider)):
-                raise ValueError("Unexpected reflection route attribution")
             return web.json_response(envelope(result, structured=structured))
         except PermissionError:
             return error(403, "Host denied inference or an override; review plugin permissions", "permission_error")

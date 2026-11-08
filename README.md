@@ -73,9 +73,12 @@ registered using the host public API. Requests use the public LLM facade; active
 selection needs no model/provider override grants. There is no Sol or Codex
 restriction. Explicit selections remain subject to the existing host permission
 gates. Conflicting task effort, extra body, routing or fallback configuration fails
-closed with HTTP 403. Returned attribution must match the selected model/provider
-where the public selection/config APIs identify them. An unresolved `auto`
-provider or unspecified active model cannot be pinned before host resolution.
+closed with HTTP 403, including task credential selectors `api_key`, `key_env`,
+and `api_key_env`. These checks compare task configuration with the requested or
+active selection before dispatch. Hermes owns subsequent route normalization and
+fallback; returned model/provider attribution comes from its facade and passes
+the proxy envelope identifier checks. It need not equal the raw selection (for
+example, a vendor-prefixed model can return a bare model ID).
 No profile settings or capability grants are written.
 
 Hermes owns provider capability handling, clamping, disabled semantics, and

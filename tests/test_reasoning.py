@@ -35,6 +35,7 @@ class Reasoning(unittest.IsolatedAsyncioTestCase):
                          {"extra_body": {"reasoning": {"effort": "low"}}},
                          {"provider": "other"}, {"model": "other"},
                          {"base_url": "custom"}, {"api_key": "synthetic"},
+                         {"key_env": "SYNTHETIC_KEY"}, {"api_key_env": "SYNTHETIC_KEY"},
                          {"api_mode": "custom"}, {"fallback_chain": ["other"]}):
                 with patch("hermes_cli.config.load_config_readonly", return_value={
                         "auxiliary": {REASONING_TASKS[effort]: task}}), self.assertRaises(PermissionError):
@@ -51,12 +52,12 @@ class Reasoning(unittest.IsolatedAsyncioTestCase):
             selection.return_value = "synthetic"
             with patch("hermes_cli.config.load_config_readonly", return_value={
                     "auxiliary": {REASONING_TASKS[effort]: task}}):
-                self.assertEqual(verify_reasoning_config(
-                    effort, model="chosen", provider="synthetic"), ("chosen", "synthetic"))
+                self.assertIsNone(verify_reasoning_config(
+                    effort, model="chosen", provider="synthetic"))
                 selection.assert_called_with("synthetic")
         selection.return_value = "auto"
         with patch("hermes_cli.config.load_config_readonly", return_value={}):
-            self.assertEqual(verify_reasoning_config("none"), (None, None))
+            self.assertIsNone(verify_reasoning_config("none"))
 
     def test_all_effort_conflicts(self, selection):
         for effort in ("none", *VALID_REASONING_EFFORTS):
@@ -77,42 +78,98 @@ class Reasoning(unittest.IsolatedAsyncioTestCase):
                                      else 400)
         llm.acomplete.assert_not_called()
 
-    async def test_route_guards_and_valid_controls(self, selection):
-        for active_provider in ("openai-codex", "synthetic"):
-            selection.return_value = active_provider
-            for requested_model in (None, "chosen"):
-                expected_model = requested_model or "active-model"
-                for mutated in (None, "provider", "model"):
-                    reply = SimpleNamespace(provider=active_provider, model=expected_model,
-                                            text="answer", usage=SimpleNamespace(
-                                                input_tokens=1, output_tokens=1, total_tokens=2))
-                    if mutated:
-                        setattr(reply, mutated, "unexpected")
-                    llm = SimpleNamespace(acomplete=AsyncMock(return_value=reply))
-                    body = {"reasoning_effort": "high", "messages": [
-                        {"role": "user", "content": "hello"}]}
-                    if requested_model:
-                        body["model"] = requested_model
-                    with patch("hermes_cli.config.load_config_readonly", return_value={
-                            "model": {"default": "active-model"}}):
-                        async with listening(model_proxy_app(llm, reasoning_config_check=
-                                                             verify_reasoning_config)) as url, \
-                                ClientSession() as session:
-                            async with session.post(url + "/v1/chat/completions", json=body) as response:
-                                self.assertEqual(response.status, 502 if mutated else 200)
-                    self.assertNotIn("provider", llm.acomplete.call_args.kwargs)
+    async def test_host_normalized_routes_and_permission_gates(self, selection):
+        from agent.plugin_llm import make_plugin_llm_for_test, _TrustPolicy
+        from hermes_cli.model_normalize import normalize_model_for_provider
+        from hermes_cli.runtime_provider_custom import expand_direct_api_alias
+
+        prefixed = "openai/gpt-6.1-sol"
+        canonical = normalize_model_for_provider(prefixed, "openai-codex")
+        self.assertEqual(canonical, "gpt-6.1-sol")
+        with patch("hermes_cli.runtime_provider._get_named_custom_provider", return_value=None), \
+                patch("hermes_cli.runtime_provider_custom.get_secret_str", return_value=""):
+            self.assertEqual(expand_direct_api_alias("openai", None),
+                             ("custom", "https://api.openai.com/v1"))
+        entries = [{"key": task, "plugin": "model-proxy"} for task in REASONING_TASKS.values()]
+        for requested_provider, actual_provider in ((None, "openai-codex"), ("openai", "custom")):
+            selection.return_value = requested_provider or "openai-codex"
+            for effort in ("none", *VALID_REASONING_EFFORTS):
+                for denied in (None, "model", "provider", "model_allowlist", "provider_allowlist"):
+                    if denied and denied.startswith("provider") and requested_provider is None:
+                        continue
+                    llm = make_plugin_llm_for_test(plugin_id="model-proxy", policy=_TrustPolicy(
+                        plugin_id="model-proxy", allow_model_override=denied != "model",
+                        allow_provider_override=denied != "provider",
+                        allowed_models=frozenset({"other"}) if denied == "model_allowlist" else None,
+                        allowed_providers=frozenset({"other"}) if denied == "provider_allowlist" else None))
+
+                    async def host(**kwargs):
+                        kwargs["route_info"].update(provider=actual_provider, model="route-model")
+                        return SimpleNamespace(model=canonical, choices=[SimpleNamespace(
+                            message=SimpleNamespace(content="answer"))])
+
+                    with patch("hermes_cli.config.load_config_readonly", return_value={}), \
+                            patch("hermes_cli.plugins.get_plugin_auxiliary_tasks", return_value=entries), \
+                            patch("agent.auxiliary_client.async_call_llm", side_effect=host) as caller:
+                        async with listening(model_proxy_app(llm, provider=requested_provider,
+                                reasoning_config_check=verify_reasoning_config)) as url, ClientSession() as session:
+                            async with session.post(url + "/v1/chat/completions", json={
+                                    "reasoning_effort": effort, "model": prefixed,
+                                    "messages": [{"role": "user", "content": "hello"}]}) as response:
+                                self.assertEqual(response.status, 403 if denied else 200)
+                                body = await response.json()
+                        if denied:
+                            caller.assert_not_called()
+                        else:
+                            self.assertEqual((body["model"], body["provider"]), (canonical, actual_provider))
+                            self.assertEqual(caller.call_args.kwargs["model"], prefixed)
+                            self.assertEqual(caller.call_args.kwargs["provider"], requested_provider)
+
+    async def test_credential_aliases_denied_before_dispatch(self, selection):
+        for effort in ("none", *VALID_REASONING_EFFORTS):
+            for field in ("api_key", "key_env", "api_key_env"):
+                llm = SimpleNamespace(acomplete=AsyncMock())
+                with patch("hermes_cli.config.load_config_readonly", return_value={
+                        "auxiliary": {REASONING_TASKS[effort]: {field: "SYNTHETIC_KEY"}}}), \
+                        patch("agent.auxiliary_client._scoped_key_env") as credential_reader:
+                    async with listening(model_proxy_app(llm, reasoning_config_check=
+                            verify_reasoning_config)) as url, ClientSession() as session:
+                        async with session.post(url + "/v1/chat/completions", json={
+                                "reasoning_effort": effort,
+                                "messages": [{"role": "user", "content": "hello"}]}) as response:
+                            self.assertEqual(response.status, 403)
+                credential_reader.assert_not_called()
+                llm.acomplete.assert_not_called()
 
     async def test_config_denied_before_dispatch(self, selection):
-        llm = SimpleNamespace(acomplete=AsyncMock())
-        with patch("hermes_cli.config.load_config_readonly", return_value={
-                "auxiliary": {REASONING_TASKS["high"]: {"reasoning_effort": "low"}}}):
-            async with listening(model_proxy_app(llm, reasoning_config_check=
-                                                 verify_reasoning_config)) as url, ClientSession() as session:
-                async with session.post(url + "/v1/chat/completions", json={
-                        "reasoning_effort": "high", "messages": [
-                            {"role": "user", "content": "hello"}]}) as response:
-                    self.assertEqual(response.status, 403)
-        llm.acomplete.assert_not_called()
+        for effort in ("none", *VALID_REASONING_EFFORTS):
+            for task in ({"reasoning_effort": "low" if effort != "low" else "none"},
+                         {"model": "redirect"}, {"provider": "redirect"}):
+                llm = SimpleNamespace(acomplete=AsyncMock())
+                with patch("hermes_cli.config.load_config_readonly", return_value={
+                        "auxiliary": {REASONING_TASKS[effort]: task}}):
+                    async with listening(model_proxy_app(llm, reasoning_config_check=
+                            verify_reasoning_config)) as url, ClientSession() as session:
+                        async with session.post(url + "/v1/chat/completions", json={
+                                "reasoning_effort": effort, "messages": [
+                                    {"role": "user", "content": "hello"}]}) as response:
+                            self.assertEqual(response.status, 403)
+                llm.acomplete.assert_not_called()
+
+    async def test_reasoning_envelope_identifier_checks(self, selection):
+        for field in ("model", "provider"):
+            reply = SimpleNamespace(model="canonical", provider="synthetic", text="answer",
+                                    usage=SimpleNamespace(input_tokens=1, output_tokens=1, total_tokens=2))
+            setattr(reply, field, "invalid\nidentifier")
+            llm = SimpleNamespace(acomplete=AsyncMock(return_value=reply))
+            with patch("hermes_cli.config.load_config_readonly", return_value={}):
+                async with listening(model_proxy_app(llm, reasoning_config_check=
+                        verify_reasoning_config)) as url, ClientSession() as session:
+                    async with session.post(url + "/v1/chat/completions", json={
+                            "reasoning_effort": "high", "messages": [
+                                {"role": "user", "content": "hello"}]}) as response:
+                        self.assertEqual(response.status, 502)
+                        self.assertNotIn("identifier", await response.text())
 
     async def test_real_owned_task_to_codex_wire(self, selection):
         import httpx
