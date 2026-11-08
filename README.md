@@ -74,8 +74,12 @@ selection needs no model/provider override grants. There is no Sol or Codex
 restriction. Explicit selections remain subject to the existing host permission
 gates. Conflicting task effort, extra body, routing or fallback configuration fails
 closed with HTTP 403, including task credential selectors `api_key`, `key_env`,
-and `api_key_env`. These checks compare task configuration with the requested or
-active selection before dispatch. Hermes owns subsequent route normalization and
+and `api_key_env`. Task routes must inherit: provider may be absent, blank, or
+`auto` (case-sensitive after stripping); model may be absent, blank, or `auto`
+(case-insensitive after stripping). Explicit null and all concrete task routes
+are rejected, even when they match the request. Preflight reads task configuration
+without resolving the active route, discovering models, or reading credentials.
+Hermes owns subsequent route normalization and
 fallback; returned model/provider attribution comes from its facade and passes
 the proxy envelope identifier checks. It need not equal the raw selection (for
 example, a vendor-prefixed model can return a bare model ID).

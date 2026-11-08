@@ -12,9 +12,8 @@ from hermes_model_proxy.model_proxy import (
 from hermes_model_proxy.server import listening
 
 
-@patch("hermes_cli.runtime_provider.resolve_requested_provider", return_value="openai-codex")
 class Reasoning(unittest.IsolatedAsyncioTestCase):
-    def test_validation_and_config(self, selection):
+    def test_validation_and_config(self):
         base = {"messages": [{"role": "user", "content": "hello"}]}
         self.assertNotIn("task", parse_request(base))
         for value in (None, True, False, 1, [], {}, "bogus", ""):
@@ -45,21 +44,64 @@ class Reasoning(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(parse_request({**base, "reasoning_effort": alias})["task"],
                              REASONING_TASKS["none"])
 
-    def test_selected_route_and_normalized_task_config(self, selection):
-        for effort in ("none", *VALID_REASONING_EFFORTS):
-            task = {"reasoning_effort": parse_reasoning_effort(effort),
-                    "model": "chosen", "provider": "synthetic"}
-            selection.return_value = "synthetic"
-            with patch("hermes_cli.config.load_config_readonly", return_value={
-                    "auxiliary": {REASONING_TASKS[effort]: task}}):
-                self.assertIsNone(verify_reasoning_config(
-                    effort, model="chosen", provider="synthetic"))
-                selection.assert_called_with("synthetic")
-        selection.return_value = "auto"
-        with patch("hermes_cli.config.load_config_readonly", return_value={}):
-            self.assertIsNone(verify_reasoning_config("none"))
+    def test_preflight_never_resolves_active_route(self):
+        class TaskOnlyConfig(dict):
+            def get(self, key, default=None):
+                if key == "model":
+                    raise AssertionError("Preflight read active model configuration")
+                return super().get(key, default)
 
-    def test_all_effort_conflicts(self, selection):
+        with patch("hermes_cli.config.load_config_readonly", return_value=TaskOnlyConfig()), \
+                patch("hermes_cli.runtime_provider.resolve_requested_provider") as resolver, \
+                patch("hermes_cli.runtime_provider._get_model_config") as model_config, \
+                patch("hermes_cli.runtime_provider._auto_detect_local_model") as discovery, \
+                patch("hermes_cli.runtime_provider.get_secret_str") as credential_reader, \
+                patch("socket.socket") as network:
+            for effort in ("none", *VALID_REASONING_EFFORTS):
+                verify_reasoning_config(effort)
+                verify_reasoning_config(effort, model="chosen", provider="synthetic")
+            for unused in (resolver, model_config, discovery, credential_reader, network):
+                unused.assert_not_called()
+
+    def test_inherited_task_routes_and_no_resolution(self):
+        from agent import auxiliary_client as aux
+
+        for effort in ("none", *VALID_REASONING_EFFORTS):
+            for provider in ("", "  ", "auto", " auto "):
+                for model in ("", "  ", "auto", " AuTo "):
+                    task = {"reasoning_effort": parse_reasoning_effort(effort),
+                            "model": model, "provider": provider}
+                    with patch("hermes_cli.config.load_config_readonly", return_value={
+                            "auxiliary": {REASONING_TASKS[effort]: task}}), \
+                            patch("hermes_cli.plugins.get_plugin_auxiliary_tasks", return_value=[]), \
+                            patch("hermes_cli.runtime_provider.resolve_requested_provider") as resolver, \
+                            patch("hermes_cli.runtime_provider._get_model_config") as model_config, \
+                            patch("hermes_cli.runtime_provider._auto_detect_local_model") as discovery, \
+                            patch.object(aux, "_scoped_key_env") as credential_reader:
+                        self.assertIsNone(verify_reasoning_config(
+                            effort, model="chosen", provider="synthetic"))
+                        resolver.assert_not_called()
+                        model_config.assert_not_called()
+                        discovery.assert_not_called()
+                        credential_reader.assert_not_called()
+                        self.assertEqual(aux._resolve_task_provider_model(REASONING_TASKS[effort]),
+                                         ("auto", None, None, None, None))
+        for task in ({}, {"provider": None}, {"model": None},
+                     {"provider": " AUTO "}, {"provider": "synthetic"},
+                     {"model": "chosen"}, {"provider": "default"}, {"model": "inherit"}):
+            with self.subTest(task=task), patch("hermes_cli.config.load_config_readonly", return_value={
+                    "auxiliary": {REASONING_TASKS["high"]: task}}), \
+                    patch("hermes_cli.plugins.get_plugin_auxiliary_tasks", return_value=[]):
+                route = aux._resolve_task_provider_model(REASONING_TASKS["high"])
+                if not task:
+                    self.assertEqual(route, ("auto", None, None, None, None))
+                    self.assertIsNone(verify_reasoning_config("high"))
+                else:
+                    self.assertNotEqual(route[:2], ("auto", None))
+                    with self.assertRaises(PermissionError):
+                        verify_reasoning_config("high", model="chosen", provider="synthetic")
+
+    def test_all_effort_conflicts(self):
         for effort in ("none", *VALID_REASONING_EFFORTS):
             other = "high" if effort != "high" else "none"
             with patch("hermes_cli.config.load_config_readonly", return_value={
@@ -67,7 +109,7 @@ class Reasoning(unittest.IsolatedAsyncioTestCase):
                     self.assertRaises(PermissionError):
                 verify_reasoning_config(effort)
 
-    async def test_http_fail_closed(self, selection):
+    async def test_http_fail_closed(self):
         llm = SimpleNamespace(acomplete=AsyncMock())
         base = {"messages": [{"role": "user", "content": "hello"}]}
         async with listening(model_proxy_app(llm)) as url, ClientSession() as session:
@@ -78,7 +120,7 @@ class Reasoning(unittest.IsolatedAsyncioTestCase):
                                      else 400)
         llm.acomplete.assert_not_called()
 
-    async def test_host_normalized_routes_and_permission_gates(self, selection):
+    async def test_host_normalized_routes_and_permission_gates(self):
         from agent.plugin_llm import make_plugin_llm_for_test, _TrustPolicy
         from hermes_cli.model_normalize import normalize_model_for_provider
         from hermes_cli.runtime_provider_custom import expand_direct_api_alias
@@ -92,7 +134,6 @@ class Reasoning(unittest.IsolatedAsyncioTestCase):
                              ("custom", "https://api.openai.com/v1"))
         entries = [{"key": task, "plugin": "model-proxy"} for task in REASONING_TASKS.values()]
         for requested_provider, actual_provider in ((None, "openai-codex"), ("openai", "custom")):
-            selection.return_value = requested_provider or "openai-codex"
             for effort in ("none", *VALID_REASONING_EFFORTS):
                 for denied in (None, "model", "provider", "model_allowlist", "provider_allowlist"):
                     if denied and denied.startswith("provider") and requested_provider is None:
@@ -125,7 +166,7 @@ class Reasoning(unittest.IsolatedAsyncioTestCase):
                             self.assertEqual(caller.call_args.kwargs["model"], prefixed)
                             self.assertEqual(caller.call_args.kwargs["provider"], requested_provider)
 
-    async def test_credential_aliases_denied_before_dispatch(self, selection):
+    async def test_credential_aliases_denied_before_dispatch(self):
         for effort in ("none", *VALID_REASONING_EFFORTS):
             for field in ("api_key", "key_env", "api_key_env"):
                 llm = SimpleNamespace(acomplete=AsyncMock())
@@ -141,22 +182,23 @@ class Reasoning(unittest.IsolatedAsyncioTestCase):
                 credential_reader.assert_not_called()
                 llm.acomplete.assert_not_called()
 
-    async def test_config_denied_before_dispatch(self, selection):
+    async def test_config_denied_before_dispatch(self):
         for effort in ("none", *VALID_REASONING_EFFORTS):
             for task in ({"reasoning_effort": "low" if effort != "low" else "none"},
-                         {"model": "redirect"}, {"provider": "redirect"}):
+                         {"model": "redirect"}, {"provider": "redirect"},
+                         {"model": "chosen"}, {"provider": "synthetic"}):
                 llm = SimpleNamespace(acomplete=AsyncMock())
                 with patch("hermes_cli.config.load_config_readonly", return_value={
                         "auxiliary": {REASONING_TASKS[effort]: task}}):
-                    async with listening(model_proxy_app(llm, reasoning_config_check=
-                            verify_reasoning_config)) as url, ClientSession() as session:
+                    async with listening(model_proxy_app(llm, model="chosen", provider="synthetic",
+                            reasoning_config_check=verify_reasoning_config)) as url, ClientSession() as session:
                         async with session.post(url + "/v1/chat/completions", json={
                                 "reasoning_effort": effort, "messages": [
                                     {"role": "user", "content": "hello"}]}) as response:
                             self.assertEqual(response.status, 403)
                 llm.acomplete.assert_not_called()
 
-    async def test_reasoning_envelope_identifier_checks(self, selection):
+    async def test_reasoning_envelope_identifier_checks(self):
         for field in ("model", "provider"):
             reply = SimpleNamespace(model="canonical", provider="synthetic", text="answer",
                                     usage=SimpleNamespace(input_tokens=1, output_tokens=1, total_tokens=2))
@@ -171,7 +213,7 @@ class Reasoning(unittest.IsolatedAsyncioTestCase):
                         self.assertEqual(response.status, 502)
                         self.assertNotIn("identifier", await response.text())
 
-    async def test_real_owned_task_to_codex_wire(self, selection):
+    async def test_real_owned_task_to_codex_wire(self):
         import httpx
         from openai import OpenAI
         from agent import auxiliary_client as aux

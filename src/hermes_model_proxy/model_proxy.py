@@ -120,19 +120,14 @@ def envelope(result, *, structured=False):
 
 
 def verify_reasoning_config(effort, *, model=None, provider=None):
-    """Reject task controls that change the requested effort or selection.
+    """Require inherited task routing without resolving the active route.
 
-    This preflight reads selection/config only, without resolving credentials or
-    clients. Hermes owns route resolution and result attribution, including aliases
-    and fallback; raw selections are not canonical result identifiers.
+    Match host task normalization: strip both fields, and case-fold only model
+    auto. Explicit null is stringified by the host and is not inheritance.
+    Hermes owns request route permissions, resolution, and result attribution.
     """
     from hermes_cli.config import load_config_readonly
-    from hermes_cli.runtime_provider import resolve_requested_provider
     config = load_config_readonly()
-    selected_provider = resolve_requested_provider(provider)
-    model_config = config.get("model", {})
-    selected_model = model or (model_config.get("default") if isinstance(model_config, dict)
-                               else model_config)
     auxiliary = config.get("auxiliary", {})
     task = auxiliary.get(REASONING_TASKS[effort], {}) if isinstance(auxiliary, dict) else None
     if not isinstance(task, dict):
@@ -142,8 +137,8 @@ def verify_reasoning_config(effort, *, model=None, provider=None):
             or effective.get("extra_body") not in (None, {})
             or any(effective.get(k) for k in ("base_url", "api_key", "key_env", "api_key_env",
                                             "api_mode", "fallback_chain"))
-            or effective.get("provider", "auto") not in ("auto", selected_provider)
-            or effective.get("model", "") not in ("", selected_model)):
+            or str(effective.get("provider", "")).strip() not in ("", "auto")
+            or str(effective.get("model", "")).strip().lower() not in ("", "auto")):
         raise PermissionError("Reflection task configuration conflicts with requested reasoning")
 
 
